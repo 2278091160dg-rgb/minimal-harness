@@ -1,0 +1,5 @@
+## Minimal Harness workflow
+
+The authoritative project state lives in `.harness/tasks.json`; `.harness/HANDOFF.md` is its generated human-readable view. Begin with `python3 .harness/harness.py doctor` and `python3 .harness/harness.py status`.
+
+Select at most one task with `next`. Use `verify` for command checks and `record` for browser/manual evidence. A task may be completed only when every acceptance item is passed. An unavailable browser or other missing capability must be recorded as `unverified`. Stay within configured paths, request confirmation for configured approval operations, and run `handoff` at the end of the session.

@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "current_task_id": null,
+  "tasks": [
+    {
+      "id": "todo-add",
+      "title": "输入文字后能新增一条待办",
+      "status": "pending",
+      "acceptance": [
+        {
+          "id": "add-in-browser",
+          "type": "browser",
+          "instruction": "输入一段文字并点击新增，页面应出现一条未完成待办。",
+          "steps": [
+            "打开 http://127.0.0.1:8000。",
+            "在输入框输入“验证 Harness”，点击“新增待办”。",
+            "确认列表出现文字“验证 Harness”，且复选框未勾选。"
+          ],
+          "status": "not_run",
+          "consecutive_failures": 0,
+          "latest_evidence": null,
+          "latest_evidence_sha256": null
+        }
+      ]
+    },
+    {
+      "id": "todo-toggle",
+      "title": "勾选后显示已完成",
+      "status": "pending",
+      "acceptance": [
+        {
+          "id": "toggle-in-browser",
+          "type": "browser",
+          "instruction": "勾选待办后，该项应显示完成状态。",
+          "steps": [
+            "新增一条待办。",
+            "勾选该待办的复选框。",
+            "确认文字出现删除线且状态文字变为“已完成”。"
+          ],
+          "status": "not_run",
+          "consecutive_failures": 0,
+          "latest_evidence": null,
+          "latest_evidence_sha256": null
+        }
+      ]
+    },
+    {
+      "id": "todo-persist",
+      "title": "刷新页面后数据仍然存在",
+      "status": "pending",
+      "acceptance": [
+        {
+          "id": "persist-in-browser",
+          "type": "browser",
+          "instruction": "新增并勾选待办，刷新页面后内容和完成状态都应保留。",
+          "steps": [
+            "新增一条待办并勾选它。",
+            "刷新浏览器页面。",
+            "确认待办文字和已完成状态仍然存在。"
+          ],
+          "status": "not_run",
+          "consecutive_failures": 0,
+          "latest_evidence": null,
+          "latest_evidence_sha256": null
+        }
+      ]
+    }
+  ]
+}

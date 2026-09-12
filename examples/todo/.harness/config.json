@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "project_name": "Minimal Harness Todo Example",
+  "commands": {
+    "setup": null,
+    "start": [
+      "python3",
+      "-m",
+      "http.server",
+      "8000",
+      "--directory",
+      "site"
+    ],
+    "check": [
+      "node",
+      "--test",
+      "test.mjs"
+    ]
+  },
+  "policy": {
+    "max_consecutive_failures": 3,
+    "allowed_paths": [
+      "site/**",
+      "test.mjs",
+      "proof/**",
+      ".harness/**"
+    ],
+    "approval_required_operations": [
+      "install or remove dependencies",
+      "delete or move user files",
+      "write to external services",
+      "git commit, push, reset, or history changes"
+    ]
+  }
+}

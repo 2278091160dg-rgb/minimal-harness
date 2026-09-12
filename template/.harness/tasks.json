@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "current_task_id": null,
+  "tasks": [
+    {
+      "id": "task-001",
+      "title": "Replace this example with the first checkable task",
+      "status": "pending",
+      "acceptance": [
+        {
+          "id": "acceptance-001",
+          "type": "manual",
+          "instruction": "Perform the stated acceptance action and observe the expected result.",
+          "steps": [
+            "Describe the action to perform.",
+            "Describe the result that must be observed."
+          ],
+          "status": "not_run",
+          "consecutive_failures": 0,
+          "latest_evidence": null,
+          "latest_evidence_sha256": null
+        }
+      ]
+    }
+  ]
+}

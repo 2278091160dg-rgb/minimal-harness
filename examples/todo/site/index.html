@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Minimal Harness Todo</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="todo-card">
+      <p class="eyebrow">MINIMAL HARNESS DEMO</p>
+      <h1>今天要完成什么？</h1>
+      <p class="intro">这个页面用于真实验证新增、完成状态与刷新持久化。</p>
+
+      <form id="todo-form" class="todo-form">
+        <label class="sr-only" for="todo-input">待办内容</label>
+        <input id="todo-input" name="todo" type="text" placeholder="输入一条待办…" autocomplete="off">
+        <button id="add-button" type="submit">新增待办</button>
+      </form>
+
+      <p id="empty-state" class="empty-state">还没有待办，先添加一条。</p>
+      <ul id="todo-list" class="todo-list" aria-live="polite"></ul>
+    </main>
+    <script type="module" src="app.mjs"></script>
+  </body>
+</html>

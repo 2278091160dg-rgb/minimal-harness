@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "project_name": "Replace with your project name",
+  "commands": {
+    "setup": null,
+    "start": null,
+    "check": [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests"
+    ]
+  },
+  "policy": {
+    "max_consecutive_failures": 3,
+    "allowed_paths": [
+      "src/**",
+      "tests/**",
+      ".harness/**"
+    ],
+    "approval_required_operations": [
+      "install or remove dependencies",
+      "delete or move user files",
+      "write to external services",
+      "git commit, push, reset, or history changes"
+    ]
+  }
+}
