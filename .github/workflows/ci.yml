@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.9", "3.x"]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+      - name: Python unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Node unit tests
+        run: node --test examples/todo/test.mjs
+      - name: Harness doctor
+        run: |
+          python template/.harness/harness.py --workspace template doctor
+          python template/.harness/harness.py --workspace examples/todo doctor
+      - name: Example Harness check
+        run: python template/.harness/harness.py --workspace examples/todo run check

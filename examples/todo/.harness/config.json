@@ -4,7 +4,7 @@
   "commands": {
     "setup": null,
     "start": [
-      "python3",
+      "{python}",
       "-m",
       "http.server",
       "8000",

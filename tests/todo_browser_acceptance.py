@@ -6,6 +6,7 @@ from playwright.sync_api import sync_playwright
 
 
 SCREENSHOT = Path("/tmp/minimal-harness-todo-acceptance.png")
+SCREENSHOT.unlink(missing_ok=True)
 
 
 with sync_playwright() as playwright:
@@ -37,16 +38,20 @@ with sync_playwright() as playwright:
     item.locator('input[type="checkbox"]').check()
     assert "completed" in (item.get_attribute("class") or ""), "勾选后应显示完成样式"
     assert item.locator(".todo-state").inner_text() == "已完成", "勾选后状态文字应更新"
+    decoration = item.locator(".todo-text").evaluate(
+        "element => getComputedStyle(element).textDecorationLine"
+    )
+    assert "line-through" in decoration, "勾选后计算样式应包含删除线"
 
     page.reload(wait_until="networkidle")
     persisted = page.locator(".todo-item", has_text="验证 Harness")
     assert persisted.count() == 1, "刷新后待办应保留"
     assert persisted.locator('input[type="checkbox"]').is_checked(), "刷新后完成状态应保留"
-    assert not console_errors, (
-        f"浏览器控制台不应出现错误: {console_errors}; failed resources: {failed_resources}"
-    )
+    assert not console_errors, f"浏览器控制台不应出现错误: {console_errors}"
+    assert not failed_resources, f"页面资源不应加载失败: {failed_resources}"
 
     page.screenshot(path=str(SCREENSHOT), full_page=True)
+    assert SCREENSHOT.is_file() and SCREENSHOT.stat().st_size > 0, "验收截图必须是非空普通文件"
     page.close()
     browser.close()
 

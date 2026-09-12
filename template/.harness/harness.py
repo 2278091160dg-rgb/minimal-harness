@@ -609,7 +609,14 @@ def render_handoff(workspace: Path, config: Dict[str, Any], state: Dict[str, Any
     else:
         lines.append("None")
     lines.extend(["", "## Recently completed", ""])
-    lines.extend([f"- {task['id']}: {task['title']}" for task in completed] or ["None"])
+    lines.extend(
+        [
+            f"- {task['id']}: {task['title']}"
+            + (" [legacy evidence]" if task.get("legacy_evidence") is True else "")
+            for task in completed
+        ]
+        or ["None"]
+    )
     lines.extend(["", "## Failures and blockers", ""])
     failure_lines = [f"- {task['id']}: {task.get('block_reason', 'blocked')}" for task in blocked]
     failure_lines.extend(
@@ -914,6 +921,10 @@ def validate_file_metadata(
 ) -> Path:
     if metadata.get("type") != "file" or not isinstance(metadata.get("path"), str):
         raise HarnessError(f"{description} metadata is invalid")
+    candidate = Path(metadata["path"])
+    lexical_path = candidate if candidate.is_absolute() else workspace / candidate
+    if lexical_path.is_symlink():
+        raise HarnessError(f"{description} must be a non-symlink regular file")
     path = resolve_inside(metadata["path"], workspace, description)
     try:
         path.relative_to(required_root.resolve())
@@ -932,6 +943,8 @@ def validate_file_metadata(
 
 
 def executable_available(workspace: Path, executable: str) -> bool:
+    if executable == "{python}":
+        return True
     executable_path = Path(executable)
     if executable_path.is_absolute() or "/" in executable or "\\" in executable:
         candidate = executable_path if executable_path.is_absolute() else workspace / executable_path
@@ -1011,17 +1024,22 @@ def decode_command_output(output: bytes) -> str:
     return output.decode("utf-8", errors="replace")
 
 
+def expand_argv(argv: List[str]) -> List[str]:
+    return [sys.executable if item == "{python}" else item for item in argv]
+
+
 def run_argv(argv: List[str], workspace: Path, capture: bool) -> subprocess.CompletedProcess[bytes]:
+    expanded_argv = expand_argv(argv)
     try:
         if capture:
             return subprocess.run(
-                argv,
+                expanded_argv,
                 cwd=workspace,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 check=False,
             )
-        process = subprocess.Popen(argv, cwd=workspace)
+        process = subprocess.Popen(expanded_argv, cwd=workspace)
         try:
             return_code = process.wait()
         except KeyboardInterrupt:
@@ -1032,7 +1050,7 @@ def run_argv(argv: List[str], workspace: Path, capture: bool) -> subprocess.Comp
                 process.kill()
                 process.wait()
             raise
-        return subprocess.CompletedProcess(argv, return_code)
+        return subprocess.CompletedProcess(expanded_argv, return_code)
     except FileNotFoundError as exc:
         raise HarnessError(f"executable not found: {argv[0]}") from exc
     except OSError as exc:
@@ -1286,6 +1304,21 @@ def command_migrate(workspace: Path, dry_run: bool, note: Optional[str]) -> int:
 
     validate_config(target_config)
     validate_tasks(target_state)
+    legacy_evidence_files = []
+    source_evidence_root = harness_dir / "evidence"
+    if source_evidence_root.exists() or source_evidence_root.is_symlink():
+        require_safe_directory(source_evidence_root, workspace, create=False)
+        for legacy_path in sorted(source_evidence_root.rglob("*")):
+            if legacy_path.is_symlink():
+                raise HarnessError(f"legacy evidence must not be a symbolic link: {legacy_path}")
+            if legacy_path.is_file():
+                legacy_evidence_files.append(
+                    {
+                        "path": legacy_path.relative_to(workspace).as_posix(),
+                        "size": legacy_path.stat().st_size,
+                        "sha256": file_sha256(legacy_path),
+                    }
+                )
     migration_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     migration_dir = harness_dir / "migrations" / f"v1-to-v2-{migration_stamp}"
     atomic_write_json(migration_dir / "config.v1.json", source_config)
@@ -1296,6 +1329,7 @@ def command_migrate(workspace: Path, dry_run: bool, note: Optional[str]) -> int:
         "source_config_sha256": file_sha256(migration_dir / "config.v1.json"),
         "source_tasks_sha256": file_sha256(migration_dir / "tasks.v1.json"),
         "active_task_rebaseline_note": clean_note or None,
+        "legacy_evidence_files": legacy_evidence_files,
     }
     atomic_write_json(migration_dir / "manifest.json", manifest)
     atomic_write_json(harness_dir / "config.json", target_config)

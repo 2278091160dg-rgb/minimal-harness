@@ -5,7 +5,7 @@
     "setup": null,
     "start": null,
     "check": [
-      "python3",
+      "{python}",
       "-m",
       "unittest",
       "discover",

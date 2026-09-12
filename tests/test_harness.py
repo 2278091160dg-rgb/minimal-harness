@@ -139,6 +139,12 @@ class HarnessCliTest(unittest.TestCase):
             check=False,
         )
 
+    def make_symlink_or_skip(self, link, target, *, target_is_directory=False):
+        try:
+            link.symlink_to(target, target_is_directory=target_is_directory)
+        except (NotImplementedError, OSError) as exc:
+            self.skipTest(f"symbolic links unavailable on this platform: {exc}")
+
     def initialize_git_repository(self):
         commands = [
             ["git", "init"],
@@ -249,6 +255,83 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(2, task["policy_baseline"]["schema_version"])
         self.assertEqual("acknowledge v1 baseline discontinuity", task["migration_history"][-1]["note"])
 
+    def test_migrate_blocked_v1_state_preserves_block_metadata_and_rebaselines(self):
+        self.write_json("config.json", v1_config())
+        tasks = v1_tasks(check_type="manual")
+        task = tasks["tasks"][0]
+        tasks["current_task_id"] = task["id"]
+        task["status"] = "blocked"
+        task["started_at"] = "2026-09-12T00:00:00Z"
+        task["blocked_at"] = "2026-09-12T00:03:00Z"
+        task["block_reason"] = "three observed failures"
+        task["acceptance"][0]["status"] = "failed"
+        task["acceptance"][0]["consecutive_failures"] = 3
+        self.write_json("tasks.json", tasks)
+
+        result = self.run_cli("migrate", "--note", "acknowledge blocked v1 baseline")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        migrated = self.read_tasks()["tasks"][0]
+        self.assertEqual("blocked", migrated["status"])
+        self.assertEqual("three observed failures", migrated["block_reason"])
+        self.assertEqual(2, migrated["git_baseline"]["version"])
+        self.assertEqual("acknowledge blocked v1 baseline", migrated["migration_history"][-1]["note"])
+
+    def test_migrate_downgrades_active_legacy_pass_and_labels_done_legacy_evidence(self):
+        self.write_json("config.json", v1_config())
+        tasks = v1_tasks(check_type="manual")
+        active = tasks["tasks"][0]
+        tasks["current_task_id"] = active["id"]
+        active["status"] = "in_progress"
+        active["started_at"] = "2026-09-12T00:00:00Z"
+        check = active["acceptance"][0]
+        check["status"] = "passed"
+        check["latest_evidence"] = ".harness/evidence/task-1/legacy.json"
+        check["latest_evidence_sha256"] = "legacy-digest"
+        done = tasks["tasks"][1]
+        done["status"] = "done"
+        done["completed_at"] = "2026-09-11T00:00:00Z"
+        done_check = done["acceptance"][0]
+        done_check["status"] = "passed"
+        evidence_dir = self.harness_dir / "evidence" / "task-2"
+        evidence_dir.mkdir(parents=True)
+        evidence_path = evidence_dir / "legacy.json"
+        evidence = {
+            "task_id": "task-2",
+            "check_id": "check-2",
+            "result": "passed",
+            "method": "manual",
+            "summary": "legacy observation",
+            "artifacts": [],
+        }
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+        done_check["latest_evidence"] = ".harness/evidence/task-2/legacy.json"
+        done_check["latest_evidence_sha256"] = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+        self.write_json("tasks.json", tasks)
+
+        result = self.run_cli("migrate", "--note", "accept legacy discontinuity")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        migrated = self.read_tasks()
+        self.assertEqual("unverified", migrated["tasks"][0]["acceptance"][0]["status"])
+        self.assertTrue(migrated["tasks"][1]["legacy_evidence"])
+        migration_dirs = list((self.harness_dir / "migrations").glob("v1-to-v2-*"))
+        self.assertEqual(1, len(migration_dirs))
+        manifest = json.loads((migration_dirs[0] / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            [
+                {
+                    "path": ".harness/evidence/task-2/legacy.json",
+                    "size": evidence_path.stat().st_size,
+                    "sha256": hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+                }
+            ],
+            manifest["legacy_evidence_files"],
+        )
+        self.assertEqual(0, self.run_cli("doctor").returncode)
+        handoff = (self.harness_dir / "HANDOFF.md").read_text(encoding="utf-8")
+        self.assertIn("legacy evidence", handoff.lower())
+
     def test_doctor_rejects_task_id_that_can_escape_evidence_directory(self):
         tasks = base_tasks(check_type="manual")
         tasks["tasks"][0]["id"] = "../../../escape"
@@ -349,6 +432,18 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("ok", result.stdout)
 
+    def test_python_argv_token_uses_current_interpreter_without_shell(self):
+        config = base_config()
+        config["commands"]["check"] = ["{python}", "-c", "print('token-ok')"]
+        self.write_json("config.json", config)
+
+        doctor = self.run_cli("doctor")
+        result = self.run_cli("run", "check")
+
+        self.assertEqual(0, doctor.returncode, doctor.stderr)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("token-ok", result.stdout)
+
     def test_run_reports_missing_executable_as_configuration_error(self):
         config = base_config()
         config["commands"]["check"] = ["definitely-not-a-real-harness-command"]
@@ -360,6 +455,7 @@ class HarnessCliTest(unittest.TestCase):
         self.assertIn("executable not found", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
+    @unittest.skipIf(os.name == "nt", "Windows does not expose POSIX executable bits")
     def test_doctor_rejects_existing_but_non_executable_command_path(self):
         command_path = self.workspace / "tools" / "check"
         command_path.parent.mkdir()
@@ -457,6 +553,7 @@ class HarnessCliTest(unittest.TestCase):
         evidence = json.loads((self.workspace / check["latest_evidence"]).read_text())
         self.assertEqual(b"\xff", (self.workspace / evidence["log"]["path"]).read_bytes())
 
+    @unittest.skipIf(os.name == "nt", "POSIX executable script behavior")
     def test_doctor_resolves_dot_slash_executable_from_workspace(self):
         tool = self.workspace / "check"
         tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -578,7 +675,7 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(0, self.run_cli("next").returncode)
         target = self.workspace / "proof-target.png"
         target.write_bytes(b"proof")
-        (self.workspace / "proof-link.png").symlink_to(target)
+        self.make_symlink_or_skip(self.workspace / "proof-link.png", target)
 
         result = self.run_cli(
             "record", "task-1", "check-1", "--result", "passed", "--summary", "observed",
@@ -607,6 +704,28 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(1, result.returncode)
         self.assertIn("artifact digest", result.stderr)
 
+    def test_complete_rejects_artifact_replaced_by_same_content_symlink(self):
+        self.write_json("tasks.json", base_tasks(check_type="browser"))
+        self.assertEqual(0, self.run_cli("next").returncode)
+        proof = self.workspace / "proof.png"
+        duplicate = self.workspace / "duplicate.png"
+        proof.write_bytes(b"identical proof")
+        duplicate.write_bytes(b"identical proof")
+        self.assertEqual(
+            0,
+            self.run_cli(
+                "record", "task-1", "check-1", "--result", "passed", "--summary", "observed",
+                "--tool", "browser", "--artifact", "proof.png",
+            ).returncode,
+        )
+        proof.unlink()
+        self.make_symlink_or_skip(proof, duplicate)
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("non-symlink", result.stderr)
+
     def test_complete_rejects_tampered_command_log(self):
         self.assertEqual(0, self.run_cli("next").returncode)
         self.assertEqual(0, self.run_cli("verify").returncode)
@@ -625,7 +744,9 @@ class HarnessCliTest(unittest.TestCase):
         external = Path(self.temp_dir.name).parent / f"external-evidence-{os.getpid()}"
         external.mkdir(exist_ok=False)
         self.addCleanup(lambda: shutil.rmtree(external, ignore_errors=True))
-        (self.harness_dir / "evidence").symlink_to(external, target_is_directory=True)
+        self.make_symlink_or_skip(
+            self.harness_dir / "evidence", external, target_is_directory=True
+        )
 
         result = self.run_cli(
             "record", "task-1", "check-1", "--result", "passed", "--summary", "observed",
@@ -975,6 +1096,79 @@ class HarnessCliTest(unittest.TestCase):
 
         self.assertEqual(1, result.returncode)
         self.assertIn("outside allowed_paths", result.stderr)
+        self.assertIn("outside.txt", result.stderr)
+
+    def test_complete_rejects_deleted_out_of_scope_path(self):
+        self.write_json("tasks.json", base_tasks(check_type="manual"))
+        outside = self.workspace / "outside.txt"
+        outside.write_text("tracked", encoding="utf-8")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(
+            0,
+            self.run_cli(
+                "record", "task-1", "check-1", "--result", "passed", "--summary", "verified",
+            ).returncode,
+        )
+        outside.unlink()
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("outside.txt", result.stderr)
+
+    def test_complete_rejects_renamed_out_of_scope_path(self):
+        self.write_json("tasks.json", base_tasks(check_type="manual"))
+        outside = self.workspace / "outside.txt"
+        outside.write_text("tracked", encoding="utf-8")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(
+            0,
+            self.run_cli(
+                "record", "task-1", "check-1", "--result", "passed", "--summary", "verified",
+            ).returncode,
+        )
+        outside.rename(self.workspace / "renamed.txt")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("outside.txt", result.stderr)
+        self.assertIn("renamed.txt", result.stderr)
+
+    def test_complete_rejects_branch_change(self):
+        self.write_json("tasks.json", base_tasks(check_type="manual"))
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(
+            0,
+            self.run_cli(
+                "record", "task-1", "check-1", "--result", "passed", "--summary", "verified",
+            ).returncode,
+        )
+        subprocess.run(["git", "switch", "-c", "other"], cwd=self.workspace, check=True, capture_output=True)
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("branch changed", result.stderr)
+
+    def test_complete_audits_unborn_repository(self):
+        self.write_json("tasks.json", base_tasks(check_type="manual"))
+        subprocess.run(["git", "init"], cwd=self.workspace, check=True, capture_output=True)
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(
+            0,
+            self.run_cli(
+                "record", "task-1", "check-1", "--result", "passed", "--summary", "verified",
+            ).returncode,
+        )
+        (self.workspace / "outside.txt").write_text("outside", encoding="utf-8")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
         self.assertIn("outside.txt", result.stderr)
 
     def test_complete_uses_allowed_paths_from_task_start(self):

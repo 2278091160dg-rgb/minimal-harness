@@ -1,50 +1,70 @@
 # Minimal AI Coding Harness
 
-这是一套可以复制进任意代码项目的最小 Harness。它不替你调用 AI，也不假装“代码写完”就是“用户可用”；它只负责把任务、执行、真实验证、证据和下一轮交接连成一个可检查的闭环。
+这是一套可复制到任意代码项目的最小 Harness。它不调用 AI，也不把“代码写完”当作“用户可用”；它把任务、单项执行、真实验证、证据门禁和跨会话交接连接成可检查的闭环。
 
-## 1. 写清楚怎样才算完成
+Harness v2 只依赖 Python 3.9+ 标准库。Node.js 和 Playwright 只用于仓库自带示例及开发验收。
 
-复制模板并编辑任务：
+## 1. 安装或升级
+
+新项目复制模板：
 
 ```bash
 cp -R template/.harness /path/to/your-project/.harness
 cd /path/to/your-project
 ```
 
-在 `.harness/tasks.json` 中把大需求拆成有序小任务。每个任务至少有一个验收项：
+Windows PowerShell 可使用：
 
-- `command`：Harness 可以直接执行的命令。
-- `browser`：需要 Agent 的浏览器工具执行。
-- `manual`：需要人工观察或外部工具执行。
-
-任务只有 `pending / in_progress / blocked / done` 四种状态；验收只有 `not_run / passed / failed / unverified` 四种状态。`unverified` 不等于通过。
-
-## 2. 固定启动和检查入口
-
-编辑 `.harness/config.json`：
-
-- `commands.setup/start/check` 是参数数组，Harness 使用 `subprocess` 直接执行，不经过 shell。
-- 不需要的命令写成 `null`；复杂命令请放进项目自己的包装脚本，再把脚本作为一个参数数组入口。
-- `allowed_paths` 声明 Agent 可修改的范围。
-- `approval_required_operations` 声明必须先询问你的操作。
-
-这两项是流程约束和完成门禁，不是操作系统沙箱：Harness 会在 `complete` 时审计 Git 变更范围，但不会拦截 Agent 在执行过程中读写文件或执行命令。需要安全隔离时，仍应使用容器、受限账户或 Agent 平台自身的权限机制。
-
-首次运行：
-
-```bash
-python3 .harness/harness.py doctor
-python3 .harness/harness.py status
-python3 .harness/harness.py run setup
-python3 .harness/harness.py run start
-python3 .harness/harness.py run check
+```powershell
+Copy-Item -Recurse template/.harness C:\path\to\project\.harness
+Set-Location C:\path\to\project
+py -3 .harness/harness.py doctor
 ```
 
-全局 `--workspace PATH` 选项放在子命令之前，可从模板仓库操作其他目录。
+已有 v1 状态先预览迁移：
 
-## 3. 每轮只推进一个任务
+```bash
+python3 .harness/harness.py migrate --dry-run
+python3 .harness/harness.py migrate
+```
 
-固定循环：
+活动或阻塞中的 v1 任务无法证明旧 index baseline，迁移时必须显式确认断点：
+
+```bash
+python3 .harness/harness.py migrate --note "确认从当前 Git 状态重新建立 v2 baseline"
+```
+
+迁移会在 `.harness/migrations/` 保存原始 v1 配置、任务和哈希清单，不会改写历史 evidence。活动任务的 v1 passed 会降级为 `unverified`；已完成任务保留并标注为 legacy evidence。重复执行 migrate 是安全的。
+
+## 2. 任务与配置
+
+`.harness/tasks.json` 使用 schema v2。每个任务至少包含一个验收项：
+
+- `command`：Harness 直接执行 argv。
+- `browser`：Agent 使用真实浏览器执行。
+- `manual`：人工观察或外部工具执行。
+
+任务状态为 `pending / in_progress / blocked / done`；验收状态为 `not_run / passed / failed / unverified`。`unverified` 不等于通过。
+
+`.harness/config.json` 同样使用 schema v2：
+
+- `commands.setup/start/check` 必须是 argv 数组或 `null`，执行时不经过 shell。
+- argv 中的 `{python}` 会安全替换为当前运行 Harness 的 Python 解释器，适合跨平台配置。
+- `policy.allowed_paths` 使用分段 glob：`*` 只匹配一层，`**` 才能跨目录；模式必须是安全的 workspace 相对路径。
+- `policy.require_git_for_completion` 默认为 `true`。无可信 Git baseline 时可以继续管理任务和 evidence，但不能 complete。
+- `approval_required_operations` 是 Agent 与人的流程约束，不会拦截系统调用。
+
+`allowed_paths` 也不是操作系统沙箱。Harness 只在 complete 时审计 Git 范围；需要隔离时仍应使用容器、受限账户或 Agent 平台权限。
+
+模板中的检查命令示例：
+
+```json
+["{python}", "-m", "unittest", "discover", "-s", "tests"]
+```
+
+## 3. 固定工作循环
+
+全局 `--workspace PATH` 必须位于子命令之前。每轮开始执行：
 
 ```bash
 python3 .harness/harness.py doctor
@@ -52,19 +72,24 @@ python3 .harness/harness.py status
 python3 .harness/harness.py next
 ```
 
-`next` 只会选择一个任务。已有进行中或阻塞任务时，它拒绝继续。把 `adapters/AGENTS.md.snippet`、`CLAUDE.md.snippet` 或 `GENERIC.md` 的内容加入项目对应的 Agent 说明文件，让新会话遵循同一顺序。
+`next` 只领取第一个 pending 任务，并冻结：
 
-领取任务时，Harness 会同时冻结本任务使用的失败阈值和允许路径；任务进行中修改 `config.json` 不能放宽当前任务的自动门禁。`approval_required_operations` 仍是给 Agent 和人的流程约束，Harness 本身不会拦截系统调用。
+- Git branch、HEAD、工作树和 index 指纹；
+- 失败阈值、允许路径、Git completion 策略和需审批操作。
 
-第一版只支持单执行者串行运行。不要让多个进程或 Agent 同时执行会修改状态的命令（如 `next`、`verify`、`record`、`complete`、`unblock`）；原子替换可以避免半写文件，但不提供并发事务或锁。
+活动或阻塞任务存在时，`next` 拒绝选择新任务。第一版仍只支持单执行者串行运行；原子替换避免半写文件，但不提供并发事务或锁。
 
-同一验收连续失败三次后任务自动阻塞。人工处理环境或需求问题后执行：
+项目命令入口：
 
 ```bash
-python3 .harness/harness.py unblock TASK_ID --note "处理了什么"
+python3 .harness/harness.py run setup
+python3 .harness/harness.py run start
+python3 .harness/harness.py run check
 ```
 
-## 4. 用真实结果决定是否通过
+长运行 `start` 会流式继承终端输出；Ctrl-C 会终止子进程并以 130 退出，不打印 traceback。
+
+## 4. 验证与证据
 
 命令型验收：
 
@@ -72,7 +97,9 @@ python3 .harness/harness.py unblock TASK_ID --note "处理了什么"
 python3 .harness/harness.py verify
 ```
 
-浏览器或人工验收：
+stdout/stderr 会按原始字节保存到日志；终端显示使用 UTF-8 replacement 解码。退出码 0 为 passed，其他退出码为 failed。
+
+浏览器 passed 必须提供工具名和至少一个 workspace 内的非 symlink 普通文件：
 
 ```bash
 python3 .harness/harness.py record TASK_ID CHECK_ID \
@@ -82,7 +109,9 @@ python3 .harness/harness.py record TASK_ID CHECK_ID \
   --artifact proof/screenshot.png
 ```
 
-`--artifact` 可重复使用，但每个文件必须真实存在于项目目录内。没有浏览器能力时必须记录：
+manual 可以用非空摘要记录人工声明，附件可选。Harness 能验证声明与文件的一致性，但不能证明人或 Agent 没有撒谎。
+
+能力不可用时记录：
 
 ```bash
 python3 .harness/harness.py record TASK_ID CHECK_ID \
@@ -90,13 +119,23 @@ python3 .harness/harness.py record TASK_ID CHECK_ID \
   --summary "当前 Agent 没有浏览器工具"
 ```
 
-每次结果都会在 `.harness/evidence/` 新增不可覆盖的 JSON；命令输出另存日志，任务状态保存最新证据的 SHA-256，用于发现缺失或意外篡改。它是本地一致性检查，不是对同一台机器上有写权限者的密码学信任边界。只有全部验收为 `passed` 时才能执行：
+每次结果会新增不可覆盖的 schema v2 evidence JSON。最新 evidence JSON、命令日志和每个附件都记录大小及 SHA-256；doctor、handoff 和 complete 会验证路径、文件类型、摘要及任务/验收字段。
+
+同一验收达到冻结的失败阈值后任务自动 blocked。人工处理后执行：
+
+```bash
+python3 .harness/harness.py unblock TASK_ID --note "处理了什么"
+```
+
+只有全部验收为 passed、证据完整且 Git 范围审计成功时才能完成：
 
 ```bash
 python3 .harness/harness.py complete TASK_ID
 ```
 
-## 5. 留下下一轮能接手的记录
+任何 Git status、branch、HEAD 或 index 读取不确定都会 fail closed。
+
+## 5. 跨会话交接
 
 每轮结束运行：
 
@@ -104,30 +143,21 @@ python3 .harness/harness.py complete TASK_ID
 python3 .harness/harness.py handoff
 ```
 
-`.harness/HANDOFF.md` 会记录当前任务、证据状态、阻塞、Git 分支与 HEAD、工作区变更及下一条命令。Harness 不会自动 commit、push 或修改 Git 历史。
+`.harness/HANDOFF.md` 记录 schema、snapshot 时间、当前验收及有效证据、历史失败、Git 状态、越界警告和下一条命令。工作树章节明确排除生成文件 `.harness/HANDOFF.md` 自身；证据无效时只显示错误，不展示未验证摘要为可信事实。
 
-没有 Git 仓库时，`doctor` 与交接文件会明确警告，Harness 仍可管理任务和证据，但无法可靠审计代码变更范围；若要依赖 `allowed_paths` 完成门禁，应先在项目中建立 Git 基线。
+适配器片段位于 `template/.harness/adapters/`。Harness 不会自动 commit、push 或修改 Git 历史。
 
-CLI 返回码：成功为 `0`，验收或流程门禁失败为 `1`，配置或用法错误为 `2`。
+CLI 返回码：成功 `0`，验收或流程门禁失败 `1`，配置或用法错误 `2`，用户中断 `130`。
 
-## 可运行待办示例
-
-先检查并运行自动测试：
+## 可运行 Todo 示例
 
 ```bash
 python3 template/.harness/harness.py --workspace examples/todo doctor
 python3 template/.harness/harness.py --workspace examples/todo run check
-```
-
-启动页面：
-
-```bash
 python3 template/.harness/harness.py --workspace examples/todo run start
 ```
 
-访问 `http://127.0.0.1:8000`，再用 `next`、浏览器操作、`record` 和 `complete` 依次验证新增、勾选及刷新持久化。示例需要 Node.js 运行 JavaScript 单元测试，但 Harness 本身只需要 Python 3.9+ 标准库。
-
-示例目录也带有自己的 `.harness/harness.py` 入口，因此进入目录后可直接运行：
+打开 `http://127.0.0.1:8000`，验证新增、勾选和刷新持久化。示例目录也可直接执行：
 
 ```bash
 cd examples/todo
@@ -135,18 +165,19 @@ python3 .harness/harness.py doctor
 python3 .harness/harness.py status
 ```
 
-## 开发检查
+## 开发验证
 
 ```bash
 python3 -m unittest discover -s tests -v
 node --test examples/todo/test.mjs
+ruff check --no-cache template/.harness/harness.py tests/test_harness.py
 ```
 
-真实浏览器回归需要 Playwright 和一个可通过 CDP 访问的 Chromium。先在一个终端启动示例，再在仓库根目录运行浏览器脚本：
+真实浏览器回归需要 Playwright 和可通过 CDP 访问的 Chromium：
 
 ```bash
 python3 template/.harness/harness.py --workspace examples/todo run start
 python3 tests/todo_browser_acceptance.py
 ```
 
-本仓库的浏览器脚本连接 `http://127.0.0.1:9344`，这是开发环境的专用浏览器桥接端口；它不是 Harness 运行时依赖。其他环境可以用自己的浏览器工具逐步执行 `tasks.json` 中的操作，并通过 `record` 写入观察结果。
+仓库脚本默认连接 `http://127.0.0.1:9344`；这只是开发环境桥接端口，不是 Harness 运行时依赖。
