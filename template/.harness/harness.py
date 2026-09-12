@@ -330,6 +330,8 @@ def validate_tasks(state: Dict[str, Any]) -> None:
                 raise HarnessError(f"acceptance {check_id} consecutive_failures must be non-negative")
             if check["status"] in {"not_run", "passed"} and failures != 0:
                 raise HarnessError(f"acceptance {check_id} failure counter conflicts with its status")
+            if check["status"] == "failed" and failures == 0:
+                raise HarnessError(f"acceptance {check_id} failed status requires a positive failure counter")
             if check["type"] == "command":
                 validate_argv(check.get("command"), f"acceptance {check_id} command")
             else:
@@ -513,6 +515,24 @@ def git_snapshot(workspace: Path) -> Dict[str, Any]:
     if head_result.returncode == 0:
         head_value = head_result.stdout.strip()
     elif symbolic.returncode == 0:
+        metadata = run_git(
+            workspace,
+            ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=no", "--", "."],
+            "unborn HEAD probe",
+        )
+        branch_fields = {}
+        for entry in metadata.stdout.split("\0"):
+            if entry.startswith("# branch.") and " " in entry:
+                name, value = entry[2:].split(" ", 1)
+                branch_fields[name] = value
+        if (
+            branch_fields.get("branch.oid") != "(initial)"
+            or branch_fields.get("branch.head") != branch_name
+        ):
+            raise GitAuditError(
+                "Git HEAD failed and could not prove an unborn repository: "
+                + (head_result.stderr.strip() or f"exit code {head_result.returncode}")
+            )
         head_value = None
     else:
         raise GitAuditError(f"Git HEAD failed: {head_result.stderr.strip()}")
@@ -580,8 +600,10 @@ def git_index_fingerprint(workspace: Path, path: str) -> str:
 
 
 def git_committed_changes(workspace: Path, baseline_head: Optional[str], current_head: Optional[str]) -> List[str]:
-    if baseline_head == current_head or current_head is None:
+    if baseline_head == current_head:
         return []
+    if current_head is None:
+        raise GitAuditError("Git HEAD disappeared after the task started")
     prefix = git_workspace_prefix(workspace)
     if baseline_head is None:
         argv = ["git", "ls-tree", "-r", "--name-only", "-z", current_head]
@@ -1436,6 +1458,10 @@ def command_unblock(workspace: Path, task_id: str, note: str) -> int:
     task.setdefault("unblock_history", []).append({"timestamp": utc_now(), "note": note})
     for check in task["acceptance"]:
         check["consecutive_failures"] = 0
+        if check["status"] == "failed":
+            check["status"] = "unverified"
+            check["latest_evidence"] = None
+            check["latest_evidence_sha256"] = None
     task["status"] = "in_progress"
     task.pop("blocked_at", None)
     task.pop("block_reason", None)
@@ -1500,6 +1526,7 @@ def command_migrate(workspace: Path, dry_run: bool, note: Optional[str]) -> int:
             task.setdefault("migration_history", []).append(
                 {"timestamp": migration_time, "from_schema": 1, "note": clean_note}
             )
+        if status != "done":
             for check in task.get("acceptance", []):
                 if check.get("latest_evidence") is not None:
                     check["legacy_evidence"] = {
@@ -1510,8 +1537,14 @@ def command_migrate(workspace: Path, dry_run: bool, note: Optional[str]) -> int:
                     check["latest_evidence_sha256"] = None
                 if check.get("status") == "passed":
                     check["status"] = "unverified"
-        elif status == "done":
+        else:
             task["legacy_evidence"] = True
+            for check in task.get("acceptance", []):
+                if check.get("latest_evidence") is not None:
+                    check["legacy_evidence"] = {
+                        "path": check.get("latest_evidence"),
+                        "sha256": check.get("latest_evidence_sha256"),
+                    }
 
     validate_config(target_config)
     validate_tasks(target_state)

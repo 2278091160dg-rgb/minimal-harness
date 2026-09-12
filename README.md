@@ -34,7 +34,7 @@ python3 .harness/harness.py migrate
 python3 .harness/harness.py migrate --note "确认从当前 Git 状态重新建立 v2 baseline"
 ```
 
-迁移会在 `.harness/migrations/` 保存原始 v1 配置、任务和哈希清单，不会改写历史 evidence。活动任务的 v1 passed 会降级为 `unverified`；已完成任务保留并标注为 legacy evidence。重复执行 migrate 是安全的。
+迁移会在 `.harness/migrations/` 保存原始 v1 配置、任务和哈希清单，不会改写历史 evidence。所有未完成任务的 v1 passed 会降级为 `unverified`，旧证据引用从当前门禁中分离；已完成任务保留并标注为 legacy evidence。重复执行 migrate 是安全的。
 
 ## 2. 任务与配置
 
@@ -128,6 +128,8 @@ python3 .harness/harness.py record TASK_ID CHECK_ID \
 ```bash
 python3 .harness/harness.py unblock TASK_ID --note "处理了什么"
 ```
+
+`unblock` 会把失败验收重置为 `unverified`并清除其当前门禁引用；历史失败文件仍保留在 evidence 目录中。
 
 只有全部验收为 passed、证据完整且 Git 范围审计成功时才能完成：
 

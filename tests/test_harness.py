@@ -146,7 +146,7 @@ class HarnessCliTest(unittest.TestCase):
         except (NotImplementedError, OSError) as exc:
             self.skipTest(f"symbolic links unavailable on this platform: {exc}")
 
-    def git_failure_environment(self, fail_prefix):
+    def git_failure_environment(self, fail_prefix, exit_code=9):
         real_git = shutil.which("git")
         if real_git is None:
             self.skipTest("Git is required for this regression")
@@ -159,7 +159,7 @@ class HarnessCliTest(unittest.TestCase):
             f"prefix = {fail_prefix!r}\n"
             "if sys.argv[1:1 + len(prefix)] == prefix:\n"
             "    print('injected Git failure', file=sys.stderr)\n"
-            "    raise SystemExit(9)\n"
+            f"    raise SystemExit({exit_code})\n"
             f"os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])\n",
             encoding="utf-8",
         )
@@ -276,6 +276,23 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(2, result.returncode)
         self.assertIn("failure counter", result.stderr)
 
+    def test_v2_doctor_rejects_failed_check_with_zero_failure_counter(self):
+        tasks = v2_tasks(check_type="manual")
+        task = tasks["tasks"][0]
+        tasks["current_task_id"] = task["id"]
+        task["status"] = "in_progress"
+        task["started_at"] = "2026-09-12T00:00:00Z"
+        task["policy_baseline"] = dict(base_config()["policy"])
+        task["git_baseline"] = unavailable_git_baseline()
+        task["acceptance"][0]["status"] = "failed"
+        task["acceptance"][0]["consecutive_failures"] = 0
+        self.write_json("tasks.json", tasks)
+
+        result = self.run_cli("doctor")
+
+        self.assertEqual(2, result.returncode)
+        self.assertIn("positive failure counter", result.stderr)
+
     def test_v2_doctor_requires_blocking_at_frozen_failure_limit(self):
         tasks = v2_tasks(check_type="manual")
         task = tasks["tasks"][0]
@@ -360,6 +377,44 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(0, migrated.returncode, migrated.stderr)
         self.assertEqual(0, doctor.returncode, doctor.stderr)
         self.assertTrue(self.read_tasks()["tasks"][0]["legacy_evidence"])
+
+    def test_migrate_downgrades_pending_v1_pass_and_detaches_legacy_evidence(self):
+        self.write_json("config.json", v1_config())
+        tasks = v1_tasks(check_type="manual")
+        check = tasks["tasks"][0]["acceptance"][0]
+        check["status"] = "passed"
+        evidence_dir = self.harness_dir / "evidence" / "task-1"
+        evidence_dir.mkdir(parents=True)
+        evidence_path = evidence_dir / "pending-v1.json"
+        evidence_path.write_text(
+            json.dumps(
+                {
+                    "task_id": "task-1",
+                    "check_id": "check-1",
+                    "result": "passed",
+                    "method": "manual",
+                    "summary": "old pending pass",
+                    "artifacts": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        check["latest_evidence"] = evidence_path.relative_to(self.workspace).as_posix()
+        check["latest_evidence_sha256"] = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+        self.write_json("tasks.json", tasks)
+
+        migrated = self.run_cli("migrate")
+        doctor = self.run_cli("doctor")
+
+        self.assertEqual(0, migrated.returncode, migrated.stderr)
+        self.assertEqual(0, doctor.returncode, doctor.stderr)
+        migrated_check = self.read_tasks()["tasks"][0]["acceptance"][0]
+        self.assertEqual("unverified", migrated_check["status"])
+        self.assertIsNone(migrated_check["latest_evidence"])
+        self.assertEqual(
+            ".harness/evidence/task-1/pending-v1.json",
+            migrated_check["legacy_evidence"]["path"],
+        )
 
     def test_migrate_active_v1_state_requires_note_and_rebaselines(self):
         self.write_json("config.json", v1_config())
@@ -1051,6 +1106,8 @@ class HarnessCliTest(unittest.TestCase):
         task = self.read_tasks()["tasks"][0]
         self.assertEqual("in_progress", task["status"])
         self.assertEqual(0, task["acceptance"][0]["consecutive_failures"])
+        self.assertEqual("unverified", task["acceptance"][0]["status"])
+        self.assertIsNone(task["acceptance"][0]["latest_evidence"])
         self.assertEqual("human fixed the environment", task["unblock_history"][-1]["note"])
         self.assertEqual(3, len(list((self.harness_dir / "evidence" / "task-1").glob("*.json"))))
 
@@ -1232,6 +1289,12 @@ class HarnessCliTest(unittest.TestCase):
                 self.assertIn(expected, result.stderr)
                 self.assertNotIn("Traceback", result.stderr)
 
+        ambiguous = self.run_cli(
+            "next", env=self.git_failure_environment(["rev-parse", "--verify"], 128)
+        )
+        self.assertEqual(2, ambiguous.returncode)
+        self.assertIn("could not prove an unborn repository", ambiguous.stderr)
+
     @unittest.skipIf(os.name == "nt", "executable Git shim is POSIX-specific")
     def test_complete_maps_committed_diff_failure_to_gate_error(self):
         self.write_json("tasks.json", base_tasks(check_type="manual"))
@@ -1257,6 +1320,33 @@ class HarnessCliTest(unittest.TestCase):
         self.assertIn("Git revision comparison failed", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
         self.assertEqual("in_progress", self.read_tasks()["tasks"][0]["status"])
+
+    @unittest.skipIf(os.name == "nt", "executable Git shim is POSIX-specific")
+    def test_complete_rejects_ambiguous_head_failure_in_existing_repository(self):
+        self.write_json("tasks.json", base_tasks(check_type="manual"))
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(
+            0,
+            self.run_cli(
+                "record", "task-1", "check-1", "--result", "passed", "--summary", "verified"
+            ).returncode,
+        )
+        outside = self.workspace / "outside.txt"
+        outside.write_text("committed outside", encoding="utf-8")
+        subprocess.run(["git", "add", "outside.txt"], cwd=self.workspace, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "outside"], cwd=self.workspace, check=True, capture_output=True
+        )
+
+        result = self.run_cli(
+            "complete",
+            "task-1",
+            env=self.git_failure_environment(["rev-parse", "--verify"], 128),
+        )
+
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertIn("could not prove an unborn repository", result.stderr)
 
     def test_complete_detects_staged_change_hidden_behind_preexisting_dirty_worktree(self):
         self.write_json("tasks.json", base_tasks(check_type="manual"))
