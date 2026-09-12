@@ -1257,6 +1257,13 @@ def decode_command_output(output: bytes) -> str:
     return output.decode("utf-8", errors="replace")
 
 
+def configure_standard_streams() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def expand_argv(argv: List[str]) -> List[str]:
     return [sys.executable if item == "{python}" else item for item in argv]
 
@@ -1619,6 +1626,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    configure_standard_streams()
     parser = build_parser()
     args = parser.parse_args(argv)
     default_workspace = Path(__file__).resolve().parent.parent

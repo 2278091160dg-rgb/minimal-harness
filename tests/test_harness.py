@@ -135,6 +135,8 @@ class HarnessCliTest(unittest.TestCase):
         return subprocess.run(
             [sys.executable, str(SCRIPT), "--workspace", str(self.workspace), *args],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             check=False,
             env=env,
@@ -674,6 +676,18 @@ class HarnessCliTest(unittest.TestCase):
         self.assertIn("task-1", result.stdout)
         self.assertIn("check-1", result.stdout)
         self.assertIn("not_run", result.stdout)
+
+    def test_cli_forces_utf8_when_inherited_encoding_cannot_represent_state(self):
+        tasks = base_tasks()
+        tasks["tasks"][0]["title"] = "中文任务"
+        self.write_json("tasks.json", tasks)
+
+        result = self.run_cli(
+            "status", env={**os.environ, "PYTHONIOENCODING": "cp1252:strict"}
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("中文任务", result.stdout)
 
     def test_run_executes_configured_command_without_a_shell(self):
         result = self.run_cli("run", "check")
