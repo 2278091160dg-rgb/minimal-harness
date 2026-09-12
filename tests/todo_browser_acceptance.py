@@ -1,26 +1,40 @@
 """Real-browser acceptance for the dependency-free todo example."""
 
+import os
+import tempfile
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
 
-SCREENSHOT = Path("/tmp/minimal-harness-todo-acceptance.png")
+SCREENSHOT = Path(tempfile.gettempdir()) / "minimal-harness-todo-acceptance.png"
 SCREENSHOT.unlink(missing_ok=True)
 
 
 with sync_playwright() as playwright:
-    browser = playwright.chromium.connect_over_cdp("http://127.0.0.1:9344")
-    context = browser.contexts[0]
+    cdp_url = os.environ.get("HARNESS_CDP_URL")
+    browser = (
+        playwright.chromium.connect_over_cdp(cdp_url)
+        if cdp_url
+        else playwright.chromium.launch(headless=True)
+    )
+    context = browser.contexts[0] if cdp_url else browser.new_context()
     page = context.new_page()
     console_errors = []
     failed_resources = []
+    failed_requests = []
     page.on("console", lambda message: console_errors.append(message.text) if message.type == "error" else None)
     page.on(
         "response",
         lambda response: failed_resources.append(f"{response.status} {response.url}")
         if response.status >= 400
         else None,
+    )
+    page.on(
+        "requestfailed",
+        lambda request: failed_requests.append(
+            f"{request.method} {request.url}: {request.failure or 'unknown failure'}"
+        ),
     )
     cdp_session = context.new_cdp_session(page)
     cdp_session.send("Network.clearBrowserCache")
@@ -49,6 +63,7 @@ with sync_playwright() as playwright:
     assert persisted.locator('input[type="checkbox"]').is_checked(), "刷新后完成状态应保留"
     assert not console_errors, f"浏览器控制台不应出现错误: {console_errors}"
     assert not failed_resources, f"页面资源不应加载失败: {failed_resources}"
+    assert not failed_requests, f"页面请求不应在网络层失败: {failed_requests}"
 
     page.screenshot(path=str(SCREENSHOT), full_page=True)
     assert SCREENSHOT.is_file() and SCREENSHOT.stat().st_size > 0, "验收截图必须是非空普通文件"

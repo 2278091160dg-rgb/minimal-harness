@@ -77,6 +77,8 @@ python3 .harness/harness.py next
 - Git branch、HEAD、工作树和 index 指纹；
 - 失败阈值、允许路径、Git completion 策略和需审批操作。
 
+预先脏的普通文件会记录类型、模式与内容指纹。若脏路径是 submodule 或其他无法用标准库完整指纹化的对象，`next` 会拒绝建立不完整 baseline；先清理该路径后再领取任务。
+
 活动或阻塞任务存在时，`next` 拒绝选择新任务。第一版仍只支持单执行者串行运行；原子替换避免半写文件，但不提供并发事务或锁。
 
 项目命令入口：
@@ -145,6 +147,8 @@ python3 .harness/harness.py handoff
 
 `.harness/HANDOFF.md` 记录 schema、snapshot 时间、当前验收及有效证据、历史失败、Git 状态、越界警告和下一条命令。工作树章节明确排除生成文件 `.harness/HANDOFF.md` 自身；证据无效时只显示错误，不展示未验证摘要为可信事实。
 
+旧失败证据在后续记录覆盖了状态中的最新哈希后，HANDOFF 只列出路径并标记摘要未受信，不再把其文本当成可信结果展示。
+
 适配器片段位于 `template/.harness/adapters/`。Harness 不会自动 commit、push 或修改 Git 历史。
 
 CLI 返回码：成功 `0`，验收或流程门禁失败 `1`，配置或用法错误 `2`，用户中断 `130`。
@@ -180,4 +184,4 @@ python3 template/.harness/harness.py --workspace examples/todo run start
 python3 tests/todo_browser_acceptance.py
 ```
 
-仓库脚本默认连接 `http://127.0.0.1:9344`；这只是开发环境桥接端口，不是 Harness 运行时依赖。
+仓库脚本默认启动无头 Chromium；需复用已启动的专用浏览器时，可设置 `HARNESS_CDP_URL=http://127.0.0.1:9344`。Playwright 仅是开发验收依赖，不是 Harness 运行时依赖。

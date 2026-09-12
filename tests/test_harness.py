@@ -131,12 +131,13 @@ class HarnessCliTest(unittest.TestCase):
     def read_tasks(self):
         return json.loads((self.harness_dir / "tasks.json").read_text(encoding="utf-8"))
 
-    def run_cli(self, *args):
+    def run_cli(self, *args, env=None):
         return subprocess.run(
             [sys.executable, str(SCRIPT), "--workspace", str(self.workspace), *args],
             text=True,
             capture_output=True,
             check=False,
+            env=env,
         )
 
     def make_symlink_or_skip(self, link, target, *, target_is_directory=False):
@@ -144,6 +145,26 @@ class HarnessCliTest(unittest.TestCase):
             link.symlink_to(target, target_is_directory=target_is_directory)
         except (NotImplementedError, OSError) as exc:
             self.skipTest(f"symbolic links unavailable on this platform: {exc}")
+
+    def git_failure_environment(self, fail_prefix):
+        real_git = shutil.which("git")
+        if real_git is None:
+            self.skipTest("Git is required for this regression")
+        shim_dir = Path(tempfile.mkdtemp(prefix="harness-git-shim-"))
+        self.addCleanup(lambda: shutil.rmtree(shim_dir, ignore_errors=True))
+        shim = shim_dir / "git"
+        shim.write_text(
+            f"#!{sys.executable}\n"
+            "import os, sys\n"
+            f"prefix = {fail_prefix!r}\n"
+            "if sys.argv[1:1 + len(prefix)] == prefix:\n"
+            "    print('injected Git failure', file=sys.stderr)\n"
+            "    raise SystemExit(9)\n"
+            f"os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])\n",
+            encoding="utf-8",
+        )
+        shim.chmod(0o755)
+        return {**os.environ, "PATH": str(shim_dir) + os.pathsep + os.environ.get("PATH", "")}
 
     def initialize_git_repository(self):
         commands = [
@@ -213,6 +234,82 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(2, result.returncode)
         self.assertIn("failure limit", result.stderr)
 
+    def test_v2_doctor_rejects_dirty_path_missing_from_baseline_fingerprints(self):
+        tasks = v2_tasks(check_type="manual")
+        task = tasks["tasks"][0]
+        tasks["current_task_id"] = task["id"]
+        task["status"] = "in_progress"
+        task["started_at"] = "2026-09-12T00:00:00Z"
+        task["policy_baseline"] = dict(v2_config()["policy"])
+        task["git_baseline"] = unavailable_git_baseline()
+        task["git_baseline"].update(
+            {
+                "available": True,
+                "branch": "main",
+                "head": "a" * 40,
+                "dirty_paths": ["outside.txt"],
+                "worktree_fingerprints": {},
+                "index_fingerprints": {},
+            }
+        )
+        self.write_json("tasks.json", tasks)
+
+        result = self.run_cli("doctor")
+
+        self.assertEqual(2, result.returncode)
+        self.assertIn("exactly cover dirty_paths", result.stderr)
+
+    def test_v2_doctor_rejects_passed_check_with_failure_counter(self):
+        tasks = v2_tasks(check_type="manual")
+        task = tasks["tasks"][0]
+        tasks["current_task_id"] = task["id"]
+        task["status"] = "in_progress"
+        task["started_at"] = "2026-09-12T00:00:00Z"
+        task["policy_baseline"] = dict(base_config()["policy"])
+        task["git_baseline"] = unavailable_git_baseline()
+        task["acceptance"][0]["status"] = "passed"
+        task["acceptance"][0]["consecutive_failures"] = 3
+        self.write_json("tasks.json", tasks)
+
+        result = self.run_cli("doctor")
+
+        self.assertEqual(2, result.returncode)
+        self.assertIn("failure counter", result.stderr)
+
+    def test_v2_doctor_requires_blocking_at_frozen_failure_limit(self):
+        tasks = v2_tasks(check_type="manual")
+        task = tasks["tasks"][0]
+        tasks["current_task_id"] = task["id"]
+        task["status"] = "in_progress"
+        task["started_at"] = "2026-09-12T00:00:00Z"
+        task["policy_baseline"] = dict(base_config()["policy"])
+        task["git_baseline"] = unavailable_git_baseline()
+        task["acceptance"][0]["status"] = "failed"
+        task["acceptance"][0]["consecutive_failures"] = 3
+        self.write_json("tasks.json", tasks)
+
+        result = self.run_cli("doctor")
+
+        self.assertEqual(2, result.returncode)
+        self.assertIn("must be blocked", result.stderr)
+
+    def test_v2_doctor_rejects_stale_block_metadata_on_active_task(self):
+        tasks = v2_tasks(check_type="manual")
+        task = tasks["tasks"][0]
+        tasks["current_task_id"] = task["id"]
+        task["status"] = "in_progress"
+        task["started_at"] = "2026-09-12T00:00:00Z"
+        task["blocked_at"] = "2026-09-12T00:01:00Z"
+        task["block_reason"] = "stale"
+        task["policy_baseline"] = dict(base_config()["policy"])
+        task["git_baseline"] = unavailable_git_baseline()
+        self.write_json("tasks.json", tasks)
+
+        result = self.run_cli("doctor")
+
+        self.assertEqual(2, result.returncode)
+        self.assertIn("blocking metadata", result.stderr)
+
     def test_migrate_dry_run_is_read_only_then_upgrades_pending_v1_state(self):
         self.write_json("config.json", v1_config())
         self.write_json("tasks.json", v1_tasks())
@@ -235,6 +332,34 @@ class HarnessCliTest(unittest.TestCase):
         repeated = self.run_cli("migrate")
         self.assertEqual(0, repeated.returncode, repeated.stderr)
         self.assertIn("already schema v2", repeated.stdout)
+
+    def test_migrate_rejects_malformed_v1_even_in_dry_run(self):
+        config = v1_config()
+        del config["policy"]["max_consecutive_failures"]
+        self.write_json("config.json", config)
+        self.write_json("tasks.json", v1_tasks())
+
+        result = self.run_cli("migrate", "--dry-run")
+
+        self.assertEqual(2, result.returncode)
+        self.assertIn("max_consecutive_failures", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_migrate_preserves_done_v1_without_evidence_as_explicit_legacy(self):
+        self.write_json("config.json", v1_config())
+        tasks = v1_tasks(check_type="manual")
+        task = tasks["tasks"][0]
+        task["status"] = "done"
+        task["completed_at"] = "2026-09-11T00:00:00Z"
+        task["acceptance"][0]["status"] = "passed"
+        self.write_json("tasks.json", tasks)
+
+        migrated = self.run_cli("migrate")
+        doctor = self.run_cli("doctor")
+
+        self.assertEqual(0, migrated.returncode, migrated.stderr)
+        self.assertEqual(0, doctor.returncode, doctor.stderr)
+        self.assertTrue(self.read_tasks()["tasks"][0]["legacy_evidence"])
 
     def test_migrate_active_v1_state_requires_note_and_rebaselines(self):
         self.write_json("config.json", v1_config())
@@ -276,6 +401,49 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual("three observed failures", migrated["block_reason"])
         self.assertEqual(2, migrated["git_baseline"]["version"])
         self.assertEqual("acknowledge blocked v1 baseline", migrated["migration_history"][-1]["note"])
+
+    def test_migrate_detaches_active_failed_v1_evidence_from_current_gate(self):
+        self.write_json("config.json", v1_config())
+        tasks = v1_tasks(check_type="manual")
+        task = tasks["tasks"][0]
+        check = task["acceptance"][0]
+        tasks["current_task_id"] = task["id"]
+        task["status"] = "in_progress"
+        task["started_at"] = "2026-09-12T00:00:00Z"
+        check["status"] = "failed"
+        check["consecutive_failures"] = 1
+        evidence_dir = self.harness_dir / "evidence" / task["id"]
+        evidence_dir.mkdir(parents=True)
+        evidence_path = evidence_dir / "failed-v1.json"
+        evidence_path.write_text(
+            json.dumps(
+                {
+                    "task_id": task["id"],
+                    "check_id": check["id"],
+                    "result": "failed",
+                    "method": "manual",
+                    "summary": "legacy failure",
+                    "artifacts": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        check["latest_evidence"] = evidence_path.relative_to(self.workspace).as_posix()
+        check["latest_evidence_sha256"] = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+        self.write_json("tasks.json", tasks)
+
+        migrated = self.run_cli("migrate", "--note", "acknowledge failed evidence boundary")
+        doctor = self.run_cli("doctor")
+
+        self.assertEqual(0, migrated.returncode, migrated.stderr)
+        self.assertEqual(0, doctor.returncode, doctor.stderr)
+        migrated_check = self.read_tasks()["tasks"][0]["acceptance"][0]
+        self.assertEqual("failed", migrated_check["status"])
+        self.assertIsNone(migrated_check["latest_evidence"])
+        self.assertEqual(
+            ".harness/evidence/task-1/failed-v1.json",
+            migrated_check["legacy_evidence"]["path"],
+        )
 
     def test_migrate_downgrades_active_legacy_pass_and_labels_done_legacy_evidence(self):
         self.write_json("config.json", v1_config())
@@ -757,6 +925,46 @@ class HarnessCliTest(unittest.TestCase):
         self.assertNotIn("Traceback", result.stderr)
         self.assertEqual([], list(external.rglob("*")))
 
+    def test_doctor_rejects_symlinked_evidence_root_with_internal_target(self):
+        self.write_json("tasks.json", base_tasks(check_type="manual"))
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(
+            0,
+            self.run_cli(
+                "record", "task-1", "check-1", "--result", "passed", "--summary", "observed"
+            ).returncode,
+        )
+        evidence_root = self.harness_dir / "evidence"
+        relocated = self.harness_dir / "relocated-evidence"
+        evidence_root.rename(relocated)
+        self.make_symlink_or_skip(evidence_root, relocated, target_is_directory=True)
+
+        result = self.run_cli("doctor")
+
+        self.assertEqual(2, result.returncode)
+        self.assertIn("symbolic link", result.stderr)
+
+    def test_doctor_rejects_evidence_json_replaced_by_same_content_symlink(self):
+        self.write_json("tasks.json", base_tasks(check_type="manual"))
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(
+            0,
+            self.run_cli(
+                "record", "task-1", "check-1", "--result", "passed", "--summary", "observed"
+            ).returncode,
+        )
+        check = self.read_tasks()["tasks"][0]["acceptance"][0]
+        evidence_path = self.workspace / check["latest_evidence"]
+        duplicate = evidence_path.with_name("duplicate.json")
+        duplicate.write_bytes(evidence_path.read_bytes())
+        evidence_path.unlink()
+        self.make_symlink_or_skip(evidence_path, duplicate)
+
+        result = self.run_cli("doctor")
+
+        self.assertEqual(2, result.returncode)
+        self.assertIn("non-symlink", result.stderr)
+
     def test_unverified_result_prevents_completion(self):
         self.write_json("tasks.json", base_tasks(check_type="manual"))
         self.assertEqual(0, self.run_cli("next").returncode)
@@ -958,10 +1166,22 @@ class HarnessCliTest(unittest.TestCase):
             ).returncode,
         )
 
-        handoff = (self.harness_dir / "HANDOFF.md").read_text(encoding="utf-8")
+        failed_evidence = next(
+            path
+            for path in (self.harness_dir / "evidence" / "task-1").glob("*.json")
+            if json.loads(path.read_text(encoding="utf-8"))["result"] == "failed"
+        )
+        forged = json.loads(failed_evidence.read_text(encoding="utf-8"))
+        forged["summary"] = "FORGED HISTORICAL SUMMARY"
+        failed_evidence.write_text(json.dumps(forged), encoding="utf-8")
 
-        self.assertIn("button did not respond", handoff)
-        self.assertIn("Historical failure", handoff)
+        result = self.run_cli("handoff")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        handoff = (self.harness_dir / "HANDOFF.md").read_text(encoding="utf-8")
+        self.assertNotIn("FORGED HISTORICAL SUMMARY", handoff)
+        self.assertIn("untrusted summary omitted", handoff)
+        self.assertIn(failed_evidence.name, handoff)
 
     def test_complete_rejects_new_git_changes_outside_allowed_paths(self):
         self.write_json("tasks.json", base_tasks(check_type="manual"))
@@ -998,6 +1218,44 @@ class HarnessCliTest(unittest.TestCase):
 
         self.assertEqual(1, result.returncode)
         self.assertIn("git status failed", result.stderr.lower())
+
+    @unittest.skipIf(os.name == "nt", "executable Git shim is POSIX-specific")
+    def test_next_fails_closed_for_branch_and_head_command_errors(self):
+        self.initialize_git_repository()
+        for fail_prefix, expected in (
+            (["symbolic-ref"], "Git branch failed"),
+            (["rev-parse", "--verify"], "Git HEAD failed"),
+        ):
+            with self.subTest(fail_prefix=fail_prefix):
+                result = self.run_cli("next", env=self.git_failure_environment(fail_prefix))
+                self.assertEqual(2, result.returncode)
+                self.assertIn(expected, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "executable Git shim is POSIX-specific")
+    def test_complete_maps_committed_diff_failure_to_gate_error(self):
+        self.write_json("tasks.json", base_tasks(check_type="manual"))
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(
+            0,
+            self.run_cli(
+                "record", "task-1", "check-1", "--result", "passed", "--summary", "verified"
+            ).returncode,
+        )
+        source = self.workspace / "src" / "change.txt"
+        source.parent.mkdir()
+        source.write_text("change", encoding="utf-8")
+        subprocess.run(["git", "add", "src/change.txt"], cwd=self.workspace, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "change"], cwd=self.workspace, check=True, capture_output=True
+        )
+
+        result = self.run_cli("complete", "task-1", env=self.git_failure_environment(["diff"]))
+
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertIn("Git revision comparison failed", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
         self.assertEqual("in_progress", self.read_tasks()["tasks"][0]["status"])
 
     def test_complete_detects_staged_change_hidden_behind_preexisting_dirty_worktree(self):
@@ -1021,6 +1279,70 @@ class HarnessCliTest(unittest.TestCase):
 
         self.assertEqual(1, result.returncode)
         self.assertIn("outside.txt", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "Git executable-bit behavior is POSIX-specific")
+    def test_complete_detects_mode_change_on_preexisting_dirty_file(self):
+        self.write_json("tasks.json", base_tasks(check_type="manual"))
+        outside = self.workspace / "outside.sh"
+        outside.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        self.initialize_git_repository()
+        outside.chmod(0o755)
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(
+            0,
+            self.run_cli(
+                "record", "task-1", "check-1", "--result", "passed", "--summary", "verified",
+            ).returncode,
+        )
+        outside.chmod(0o644)
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("outside.sh", result.stderr)
+
+    def test_next_rejects_preexisting_dirty_submodule_it_cannot_fingerprint(self):
+        source_dir = Path(self.temp_dir.name).parent / f"harness-submodule-{os.getpid()}"
+        source_dir.mkdir()
+        self.addCleanup(lambda: shutil.rmtree(source_dir, ignore_errors=True))
+        subprocess.run(["git", "init"], cwd=source_dir, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "harness@example.test"],
+            cwd=source_dir,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Harness Test"], cwd=source_dir, check=True
+        )
+        (source_dir / "nested.txt").write_text("initial", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=source_dir, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "initial"], cwd=source_dir, check=True, capture_output=True
+        )
+        self.initialize_git_repository()
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                str(source_dir),
+                "vendor/submodule",
+            ],
+            cwd=self.workspace,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(["git", "commit", "-am", "add submodule"], cwd=self.workspace, check=True)
+        (self.workspace / "vendor" / "submodule" / "nested.txt").write_text(
+            "dirty", encoding="utf-8"
+        )
+
+        result = self.run_cli("next")
+
+        self.assertEqual(2, result.returncode)
+        self.assertIn("non-regular dirty path", result.stderr)
 
     def test_allowed_paths_single_star_does_not_cross_directory_separator(self):
         self.write_json("tasks.json", base_tasks(check_type="manual"))
