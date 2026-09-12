@@ -502,16 +502,29 @@ def path_segments_match(path_parts: List[str], pattern_parts: List[str]) -> bool
     )
 
 
-def evidence_details_for_handoff(workspace: Path, check: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def evidence_details_for_handoff(
+    workspace: Path,
+    harness_dir: Path,
+    task: Dict[str, Any],
+    check: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
     reference = check.get("latest_evidence")
     if not isinstance(reference, str) or not reference:
         return None
     try:
+        validate_evidence_reference(workspace, harness_dir, task, check)
         evidence_path = resolve_inside(reference, workspace, "evidence path")
         evidence = read_json(evidence_path)
-    except (HarnessError, OSError):
-        return {"timestamp": "Invalid", "summary": "Evidence could not be read", "path": reference}
+    except (HarnessError, OSError) as exc:
+        return {
+            "valid": False,
+            "error": str(exc),
+            "timestamp": "Invalid",
+            "summary": "Evidence invalid",
+            "path": reference,
+        }
     return {
+        "valid": True,
         "timestamp": evidence.get("timestamp", "Unknown"),
         "summary": evidence.get("summary", "No summary"),
         "path": reference,
@@ -570,6 +583,8 @@ def render_handoff(workspace: Path, config: Dict[str, Any], state: Dict[str, Any
         "## Project state",
         "",
         f"- Project: {config['project_name']}",
+        f"- Snapshot schema: {SCHEMA_VERSION}",
+        f"- Snapshot captured: {snapshot['captured_at']}",
         f"- Generated: {utc_now()}",
         f"- Branch: {snapshot['branch'] or 'Unavailable'}",
         f"- HEAD: {snapshot['head'] or 'Unavailable'}",
@@ -583,11 +598,14 @@ def render_handoff(workspace: Path, config: Dict[str, Any], state: Dict[str, Any
         lines.append("")
         for check in current["acceptance"]:
             lines.append(f"- {check['id']} [{check['status']}] ({check['type']}): {check['instruction']}")
-            details = evidence_details_for_handoff(workspace, check)
+            details = evidence_details_for_handoff(workspace, workspace / ".harness", current, check)
             if details:
-                lines.append(f"  - Evidence time: {details['timestamp']}")
-                lines.append(f"  - Evidence summary: {details['summary']}")
-                lines.append(f"  - Evidence path: {details['path']}")
+                if details["valid"]:
+                    lines.append(f"  - Evidence time: {details['timestamp']}")
+                    lines.append(f"  - Evidence summary: {details['summary']}")
+                    lines.append(f"  - Evidence path: {details['path']}")
+                else:
+                    lines.append(f"  - Evidence invalid: {details['error']}")
     else:
         lines.append("None")
     lines.extend(["", "## Recently completed", ""])
@@ -605,9 +623,12 @@ def render_handoff(workspace: Path, config: Dict[str, Any], state: Dict[str, Any
     lines.extend(failure_lines or ["None"])
     lines.extend(["", "## Unverified", ""])
     lines.extend([f"- {task['id']}/{check['id']}: {check['instruction']}" for task, check in unverified_checks] or ["None"])
-    lines.extend(["", "## Working tree", ""])
+    lines.extend(["", "## Working tree (excluding generated .harness/HANDOFF.md)", ""])
     if snapshot["available"]:
-        lines.extend([f"- {path}" for path in snapshot["dirty_paths"]] or ["Clean"])
+        displayed_paths = [
+            path for path in snapshot["dirty_paths"] if path != ".harness/HANDOFF.md"
+        ]
+        lines.extend([f"- {path}" for path in displayed_paths] or ["Clean"])
     else:
         lines.append("Git unavailable or workspace is not a repository.")
     if current and current.get("git_baseline", {}).get("available"):
@@ -742,7 +763,7 @@ def create_evidence(
     *,
     tool: Optional[str] = None,
     exit_code: Optional[int] = None,
-    output: Optional[str] = None,
+    output: Optional[bytes] = None,
     artifacts: Optional[List[Dict[str, Any]]] = None,
 ) -> tuple[str, str]:
     timestamp = utc_now()
@@ -754,7 +775,7 @@ def create_evidence(
     log_metadata = None
     if output is not None:
         absolute_log_path = evidence_dir / f"{stem}.log"
-        write_unique_bytes(absolute_log_path, output.encode("utf-8"))
+        write_unique_bytes(absolute_log_path, output)
         log_metadata = regular_file_metadata(absolute_log_path, workspace)
     evidence_path = evidence_dir / f"{stem}.json"
     evidence = {
@@ -912,7 +933,7 @@ def validate_file_metadata(
 
 def executable_available(workspace: Path, executable: str) -> bool:
     executable_path = Path(executable)
-    if executable_path.is_absolute() or executable_path.parent != Path("."):
+    if executable_path.is_absolute() or "/" in executable or "\\" in executable:
         candidate = executable_path if executable_path.is_absolute() else workspace / executable_path
         return candidate.is_file() and os.access(candidate, os.X_OK)
     return shutil.which(executable) is not None
@@ -986,18 +1007,32 @@ def command_status(workspace: Path) -> int:
     return 0
 
 
-def run_argv(argv: List[str], workspace: Path, capture: bool) -> subprocess.CompletedProcess[str]:
+def decode_command_output(output: bytes) -> str:
+    return output.decode("utf-8", errors="replace")
+
+
+def run_argv(argv: List[str], workspace: Path, capture: bool) -> subprocess.CompletedProcess[bytes]:
     try:
         if capture:
             return subprocess.run(
                 argv,
                 cwd=workspace,
-                text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 check=False,
             )
-        return subprocess.run(argv, cwd=workspace, text=True, check=False)
+        process = subprocess.Popen(argv, cwd=workspace)
+        try:
+            return_code = process.wait()
+        except KeyboardInterrupt:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            raise
+        return subprocess.CompletedProcess(argv, return_code)
     except FileNotFoundError as exc:
         raise HarnessError(f"executable not found: {argv[0]}") from exc
     except OSError as exc:
@@ -1012,7 +1047,8 @@ def command_run(workspace: Path, command_name: str) -> int:
     capture = command_name != "start"
     result = run_argv(argv, workspace, capture=capture)
     if result.stdout:
-        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+        output = decode_command_output(result.stdout)
+        print(output, end="" if output.endswith("\n") else "\n")
     return 0 if result.returncode == 0 else 1
 
 
@@ -1031,9 +1067,10 @@ def command_verify(workspace: Path, requested_task_id: Optional[str]) -> int:
         raise GateError(f"task {task_id} has no command acceptance checks")
     for check in checks:
         result = run_argv(check["command"], workspace, capture=True)
-        output = result.stdout or ""
+        output = result.stdout or b""
         if output:
-            print(output, end="" if output.endswith("\n") else "\n")
+            displayed_output = decode_command_output(output)
+            print(displayed_output, end="" if displayed_output.endswith("\n") else "\n")
         check_result = "passed" if result.returncode == 0 else "failed"
         evidence_path, evidence_sha256 = create_evidence(
             workspace,
@@ -1330,6 +1367,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except HarnessError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return exc.exit_code
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":

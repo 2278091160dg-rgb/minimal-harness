@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import queue
+import signal
 import shutil
 import subprocess
 import sys
@@ -412,6 +413,62 @@ class HarnessCliTest(unittest.TestCase):
                 process.terminate()
             process.communicate(timeout=3)
 
+    @unittest.skipIf(os.name == "nt", "POSIX signal behavior")
+    def test_run_start_handles_sigint_without_traceback(self):
+        config = base_config()
+        config["commands"]["start"] = [
+            sys.executable,
+            "-u",
+            "-c",
+            "import time; print('ready', flush=True); time.sleep(30)",
+        ]
+        self.write_json("config.json", config)
+        process = subprocess.Popen(
+            [sys.executable, str(SCRIPT), "--workspace", str(self.workspace), "run", "start"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            self.assertEqual("ready", process.stdout.readline().strip())
+            process.send_signal(signal.SIGINT)
+            stdout, stderr = process.communicate(timeout=5)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.communicate(timeout=3)
+
+        self.assertEqual(130, process.returncode, stdout + stderr)
+        self.assertNotIn("Traceback", stderr)
+        self.assertIn("Interrupted", stderr)
+
+    def test_verify_preserves_invalid_utf8_output_as_raw_log(self):
+        tasks = base_tasks(
+            command=[sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\xff')"]
+        )
+        self.write_json("tasks.json", tasks)
+        self.assertEqual(0, self.run_cli("next").returncode)
+
+        result = self.run_cli("verify")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("\ufffd", result.stdout)
+        check = self.read_tasks()["tasks"][0]["acceptance"][0]
+        evidence = json.loads((self.workspace / check["latest_evidence"]).read_text())
+        self.assertEqual(b"\xff", (self.workspace / evidence["log"]["path"]).read_bytes())
+
+    def test_doctor_resolves_dot_slash_executable_from_workspace(self):
+        tool = self.workspace / "check"
+        tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        tool.chmod(0o755)
+        config = base_config()
+        config["commands"]["check"] = ["./check"]
+        self.write_json("config.json", config)
+
+        result = self.run_cli("doctor")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+
     def test_verify_passes_command_check_and_writes_evidence_and_log(self):
         self.assertEqual(0, self.run_cli("next").returncode)
 
@@ -710,6 +767,47 @@ class HarnessCliTest(unittest.TestCase):
         self.assertIn("observed the expected browser state", handoff)
         self.assertIn(check["latest_evidence"], handoff)
         self.assertIn("Evidence time:", handoff)
+
+    def test_handoff_labels_generated_file_as_excluded_from_git_snapshot(self):
+        (self.harness_dir / "HANDOFF.md").write_text("bootstrap\n", encoding="utf-8")
+        self.initialize_git_repository()
+
+        result = self.run_cli("handoff")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        handoff = (self.harness_dir / "HANDOFF.md").read_text(encoding="utf-8")
+        actual = subprocess.run(
+            ["git", "status", "--porcelain=v1", "--", ".harness/HANDOFF.md"],
+            cwd=self.workspace,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
+        self.assertIn("Snapshot schema: 2", handoff)
+        self.assertIn("excluding generated .harness/HANDOFF.md", handoff)
+        self.assertIn(".harness/HANDOFF.md", actual)
+
+    def test_handoff_does_not_display_tampered_evidence_summary_as_trusted(self):
+        self.write_json("tasks.json", base_tasks(check_type="manual"))
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(
+            0,
+            self.run_cli(
+                "record", "task-1", "check-1", "--result", "passed", "--summary", "trusted",
+            ).returncode,
+        )
+        check = self.read_tasks()["tasks"][0]["acceptance"][0]
+        evidence_path = self.workspace / check["latest_evidence"]
+        evidence = json.loads(evidence_path.read_text())
+        evidence["summary"] = "FORGED HANDOFF SUMMARY"
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+
+        result = self.run_cli("handoff")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        handoff = (self.harness_dir / "HANDOFF.md").read_text(encoding="utf-8")
+        self.assertNotIn("FORGED HANDOFF SUMMARY", handoff)
+        self.assertIn("Evidence invalid", handoff)
 
     def test_handoff_preserves_historical_failure_after_later_pass(self):
         self.write_json("tasks.json", base_tasks(check_type="manual"))

@@ -1,37 +1,13 @@
 # Harness Handoff
 
-## Project state
+This is the schema v2 bootstrap for the Todo example. It does not contain a Git snapshot yet.
 
-- Project: Minimal Harness Todo Example
-- Generated: 2026-09-12T14:53:17.069436Z
-- Branch: main
-- HEAD: fae4042f95925472f2d66502a007552df81326da
-- Current task: None
+Run from `examples/todo`:
 
-## Current acceptance
+```bash
+python3 .harness/harness.py doctor
+python3 .harness/harness.py status
+python3 .harness/harness.py handoff
+```
 
-None
-
-## Recently completed
-
-None
-
-## Failures and blockers
-
-None
-
-## Unverified
-
-None
-
-## Working tree
-
-Clean
-
-## Pre-existing changes at task start
-
-None
-
-## Next action
-
-Run `python3 .harness/harness.py next`.
+After `handoff`, this file becomes the generated cross-session view of task, evidence, Git, and next-action state. Its working-tree section explicitly excludes `.harness/HANDOFF.md` itself.
