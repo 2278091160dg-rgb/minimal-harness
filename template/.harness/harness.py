@@ -1545,6 +1545,8 @@ def command_migrate(workspace: Path, dry_run: bool, note: Optional[str]) -> int:
                         "path": check.get("latest_evidence"),
                         "sha256": check.get("latest_evidence_sha256"),
                     }
+                    check["latest_evidence"] = None
+                    check["latest_evidence_sha256"] = None
 
     validate_config(target_config)
     validate_tasks(target_state)

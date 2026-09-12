@@ -378,6 +378,31 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(0, doctor.returncode, doctor.stderr)
         self.assertTrue(self.read_tasks()["tasks"][0]["legacy_evidence"])
 
+    def test_migrate_detaches_dangling_done_v1_evidence_reference(self):
+        self.write_json("config.json", v1_config())
+        tasks = v1_tasks(check_type="manual")
+        task = tasks["tasks"][0]
+        check = task["acceptance"][0]
+        task["status"] = "done"
+        task["completed_at"] = "2026-09-11T00:00:00Z"
+        check["status"] = "passed"
+        check["latest_evidence"] = ".harness/evidence/task-1/missing-v1.json"
+        check["latest_evidence_sha256"] = "f" * 64
+        self.write_json("tasks.json", tasks)
+
+        migrated = self.run_cli("migrate")
+        doctor = self.run_cli("doctor")
+
+        self.assertEqual(0, migrated.returncode, migrated.stderr)
+        self.assertEqual(0, doctor.returncode, doctor.stderr)
+        migrated_check = self.read_tasks()["tasks"][0]["acceptance"][0]
+        self.assertIsNone(migrated_check["latest_evidence"])
+        self.assertIsNone(migrated_check["latest_evidence_sha256"])
+        self.assertEqual(
+            ".harness/evidence/task-1/missing-v1.json",
+            migrated_check["legacy_evidence"]["path"],
+        )
+
     def test_migrate_downgrades_pending_v1_pass_and_detaches_legacy_evidence(self):
         self.write_json("config.json", v1_config())
         tasks = v1_tasks(check_type="manual")
@@ -538,6 +563,7 @@ class HarnessCliTest(unittest.TestCase):
         migrated = self.read_tasks()
         self.assertEqual("unverified", migrated["tasks"][0]["acceptance"][0]["status"])
         self.assertTrue(migrated["tasks"][1]["legacy_evidence"])
+        self.assertIsNone(migrated["tasks"][1]["acceptance"][0]["latest_evidence"])
         migration_dirs = list((self.harness_dir / "migrations").glob("v1-to-v2-*"))
         self.assertEqual(1, len(migration_dirs))
         manifest = json.loads((migration_dirs[0] / "manifest.json").read_text(encoding="utf-8"))
