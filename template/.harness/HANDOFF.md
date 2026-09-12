@@ -3,9 +3,9 @@
 ## Project state
 
 - Project: Replace with your project name
-- Generated: 2026-09-12T14:09:09.290421Z
+- Generated: 2026-09-12T14:53:16.958958Z
 - Branch: main
-- HEAD: Unavailable
+- HEAD: fae4042f95925472f2d66502a007552df81326da
 - Current task: None
 
 ## Current acceptance
@@ -26,13 +26,7 @@ None
 
 ## Working tree
 
-- .harness/HANDOFF.md
-- .harness/adapters/AGENTS.md.snippet
-- .harness/adapters/CLAUDE.md.snippet
-- .harness/adapters/GENERIC.md
-- .harness/config.json
-- .harness/harness.py
-- .harness/tasks.json
+Clean
 
 ## Pre-existing changes at task start
 

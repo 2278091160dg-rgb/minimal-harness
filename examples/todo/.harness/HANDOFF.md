@@ -3,9 +3,9 @@
 ## Project state
 
 - Project: Minimal Harness Todo Example
-- Generated: 2026-09-12T14:09:09.388666Z
+- Generated: 2026-09-12T14:53:17.069436Z
 - Branch: main
-- HEAD: Unavailable
+- HEAD: fae4042f95925472f2d66502a007552df81326da
 - Current task: None
 
 ## Current acceptance
@@ -26,17 +26,7 @@ None
 
 ## Working tree
 
-- .harness/HANDOFF.md
-- .harness/config.json
-- .harness/harness.py
-- .harness/tasks.json
-- AGENTS.md
-- site/app.mjs
-- site/favicon.svg
-- site/index.html
-- site/styles.css
-- site/todo-store.mjs
-- test.mjs
+Clean
 
 ## Pre-existing changes at task start
 
