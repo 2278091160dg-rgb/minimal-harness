@@ -1760,6 +1760,8 @@ class HarnessCliTest(unittest.TestCase):
             return subprocess.run(
                 [sys.executable, str(SCRIPT), "--workspace", str(nested), *args],
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 capture_output=True,
                 check=False,
             )
@@ -1793,6 +1795,8 @@ class HarnessCliTest(unittest.TestCase):
                 result = subprocess.run(
                     [sys.executable, str(SCRIPT), "--workspace", str(workspace), "doctor"],
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     capture_output=True,
                     check=False,
                 )
@@ -1805,12 +1809,16 @@ class HarnessCliTest(unittest.TestCase):
         first_process = subprocess.run(
             [sys.executable, str(SCRIPT), "--workspace", str(example_copy), "status"],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             check=False,
         )
         second_process = subprocess.run(
             [sys.executable, str(SCRIPT), "--workspace", str(example_copy), "run", "check"],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             check=False,
         )
@@ -1832,6 +1840,8 @@ class HarnessCliTest(unittest.TestCase):
             [sys.executable, ".harness/harness.py", "next"],
             cwd=example_copy,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             check=False,
         )
