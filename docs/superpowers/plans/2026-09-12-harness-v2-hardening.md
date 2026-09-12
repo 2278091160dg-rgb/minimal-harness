@@ -68,5 +68,5 @@
 - [x] Extend browser acceptance with computed-style, failed-resource, and screenshot-file assertions.
 - [x] Add Linux/macOS/Windows CI for Python 3.9 and current Python plus Node LTS tests.
 - [x] Run Python, Node, Ruff, doctor, example checks, and real-browser acceptance.
-- [ ] Request independent code review, fix all Critical/Important findings, and repeat verification.
-- [ ] Commit `test: add adversarial and cross-platform coverage`.
+- [x] Request independent code review, fix all Critical/Important findings, and repeat verification.
+- [x] Commit `test: add adversarial and cross-platform coverage`.
