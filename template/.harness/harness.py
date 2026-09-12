@@ -678,6 +678,59 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def require_safe_directory(path: Path, workspace: Path, *, create: bool) -> Path:
+    workspace = workspace.resolve()
+    lexical = path if path.is_absolute() else workspace / path
+    try:
+        relative = lexical.relative_to(workspace)
+    except ValueError as exc:
+        raise HarnessError(f"directory must stay inside the workspace: {path}") from exc
+    current = workspace
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise HarnessError(f"directory must not contain a symbolic link: {current}")
+    if create:
+        lexical.mkdir(parents=True, exist_ok=True)
+    if not lexical.is_dir():
+        raise HarnessError(f"required directory is not a directory: {lexical}")
+    return lexical
+
+
+def write_unique_bytes(path: Path, payload: bytes) -> None:
+    descriptor: Optional[int] = None
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = None
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileExistsError as exc:
+        raise HarnessError(f"refusing to overwrite existing evidence file: {path}") from exc
+    except OSError as exc:
+        if descriptor is not None:
+            os.close(descriptor)
+        if path.exists():
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        raise HarnessError(f"could not create evidence file {path}: {exc}") from exc
+
+
+def regular_file_metadata(path: Path, workspace: Path) -> Dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        raise HarnessError(f"artifact must be a non-symlink regular file: {path}")
+    stat_result = path.stat()
+    return {
+        "path": relative_path(path, workspace),
+        "type": "file",
+        "size": stat_result.st_size,
+        "sha256": file_sha256(path),
+    }
+
+
 def create_evidence(
     workspace: Path,
     harness_dir: Path,
@@ -690,25 +743,22 @@ def create_evidence(
     tool: Optional[str] = None,
     exit_code: Optional[int] = None,
     output: Optional[str] = None,
-    artifacts: Optional[List[str]] = None,
+    artifacts: Optional[List[Dict[str, Any]]] = None,
 ) -> tuple[str, str]:
     timestamp = utc_now()
     file_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     stem = f"{file_stamp}-{check['id']}-{uuid.uuid4().hex[:8]}"
-    evidence_root = (harness_dir / "evidence").resolve()
-    evidence_dir = (evidence_root / task["id"]).resolve()
-    try:
-        evidence_dir.relative_to(evidence_root)
-    except ValueError as exc:
-        raise HarnessError(f"task id escapes evidence directory: {task['id']}") from exc
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    log_path = None
+    require_safe_directory(harness_dir, workspace, create=False)
+    evidence_root = require_safe_directory(harness_dir / "evidence", workspace, create=True)
+    evidence_dir = require_safe_directory(evidence_root / task["id"], workspace, create=True)
+    log_metadata = None
     if output is not None:
         absolute_log_path = evidence_dir / f"{stem}.log"
-        absolute_log_path.write_text(output, encoding="utf-8")
-        log_path = relative_path(absolute_log_path, workspace)
+        write_unique_bytes(absolute_log_path, output.encode("utf-8"))
+        log_metadata = regular_file_metadata(absolute_log_path, workspace)
     evidence_path = evidence_dir / f"{stem}.json"
     evidence = {
+        "schema_version": SCHEMA_VERSION,
         "evidence_id": stem,
         "task_id": task["id"],
         "check_id": check["id"],
@@ -717,11 +767,19 @@ def create_evidence(
         "method": method,
         "summary": summary,
         "tool": tool,
+        "provenance": {
+            "command": "command-exit",
+            "browser": "browser-tool",
+            "manual": "manual-attestation",
+        }[method],
         "exit_code": exit_code,
-        "log_path": log_path,
+        "log": log_metadata,
         "artifacts": artifacts or [],
     }
-    atomic_write_json(evidence_path, evidence)
+    write_unique_bytes(
+        evidence_path,
+        (json.dumps(evidence, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+    )
     return relative_path(evidence_path, workspace), file_sha256(evidence_path)
 
 
@@ -784,6 +842,10 @@ def validate_evidence_reference(
     if not isinstance(expected_digest, str) or file_sha256(evidence_path) != expected_digest:
         raise HarnessError(f"evidence digest does not match for {task['id']}/{check['id']}")
     evidence = read_json(evidence_path)
+    if evidence.get("schema_version") != SCHEMA_VERSION:
+        if task.get("legacy_evidence") is True and task.get("status") == "done":
+            return
+        raise HarnessError(f"evidence schema_version must be {SCHEMA_VERSION} for {task['id']}/{check['id']}")
     expected = {
         "task_id": task["id"],
         "check_id": check["id"],
@@ -795,26 +857,57 @@ def validate_evidence_reference(
             raise HarnessError(f"evidence {field} does not match for {task['id']}/{check['id']}")
     if not isinstance(evidence.get("summary"), str) or not evidence["summary"].strip():
         raise HarnessError(f"evidence summary is missing for {task['id']}/{check['id']}")
-    log_reference = evidence.get("log_path")
-    if log_reference is not None:
-        if not isinstance(log_reference, str):
-            raise HarnessError(f"evidence log path is invalid for {task['id']}/{check['id']}")
-        log_path = resolve_inside(log_reference, workspace, "evidence log path")
-        try:
-            log_path.relative_to(evidence_root)
-        except ValueError as exc:
-            raise HarnessError(f"evidence log is outside its task directory for {task['id']}/{check['id']}") from exc
-        if not log_path.is_file():
-            raise HarnessError(f"evidence log does not exist: {log_reference}")
+    log_metadata = evidence.get("log")
+    if log_metadata is not None:
+        validate_file_metadata(
+            log_metadata, workspace, f"evidence log for {task['id']}/{check['id']}", evidence_root
+        )
     artifacts = evidence.get("artifacts")
-    if not isinstance(artifacts, list) or not all(isinstance(item, str) for item in artifacts):
+    if not isinstance(artifacts, list) or not all(isinstance(item, dict) for item in artifacts):
         raise HarnessError(f"evidence artifacts are invalid for {task['id']}/{check['id']}")
     for artifact in artifacts:
-        artifact_path = resolve_inside(artifact, workspace, "artifact path")
-        if not artifact_path.exists():
-            raise HarnessError(f"evidence artifact does not exist: {artifact}")
+        validate_file_metadata(
+            artifact, workspace, f"evidence artifact for {task['id']}/{check['id']}", workspace
+        )
     if check["type"] == "command" and check["status"] == "passed" and evidence.get("exit_code") != 0:
         raise HarnessError(f"passed command evidence must have exit_code 0 for {task['id']}/{check['id']}")
+    expected_provenance = {
+        "command": "command-exit",
+        "browser": "browser-tool",
+        "manual": "manual-attestation",
+    }[check["type"]]
+    if evidence.get("provenance") != expected_provenance:
+        raise HarnessError(f"evidence provenance does not match for {task['id']}/{check['id']}")
+    if check["type"] == "browser" and check["status"] == "passed":
+        if not isinstance(evidence.get("tool"), str) or not evidence["tool"].strip():
+            raise HarnessError(f"passed browser evidence requires a tool for {task['id']}/{check['id']}")
+        if not artifacts:
+            raise HarnessError(f"passed browser evidence requires an artifact for {task['id']}/{check['id']}")
+
+
+def validate_file_metadata(
+    metadata: Dict[str, Any],
+    workspace: Path,
+    description: str,
+    required_root: Path,
+) -> Path:
+    if metadata.get("type") != "file" or not isinstance(metadata.get("path"), str):
+        raise HarnessError(f"{description} metadata is invalid")
+    path = resolve_inside(metadata["path"], workspace, description)
+    try:
+        path.relative_to(required_root.resolve())
+    except ValueError as exc:
+        raise HarnessError(f"{description} is outside its allowed directory") from exc
+    if path.is_symlink() or not path.is_file():
+        raise HarnessError(f"{description} must be a non-symlink regular file")
+    expected_size = metadata.get("size")
+    if not isinstance(expected_size, int) or isinstance(expected_size, bool) or path.stat().st_size != expected_size:
+        raise HarnessError(f"{description} size does not match")
+    expected_digest = metadata.get("sha256")
+    if not isinstance(expected_digest, str) or file_sha256(path) != expected_digest:
+        kind = "log" if "log" in description else "artifact"
+        raise HarnessError(f"evidence {kind} digest does not match")
+    return path
 
 
 def executable_available(workspace: Path, executable: str) -> bool:
@@ -962,19 +1055,22 @@ def command_verify(workspace: Path, requested_task_id: Optional[str]) -> int:
     return 0
 
 
-def validate_artifacts(workspace: Path, artifacts: List[str]) -> List[str]:
-    validated = []
+def validate_artifacts(workspace: Path, artifacts: List[str]) -> List[Dict[str, Any]]:
+    validated: List[Dict[str, Any]] = []
     workspace = workspace.resolve()
     for artifact in artifacts:
         candidate = Path(artifact)
-        resolved = (candidate if candidate.is_absolute() else workspace / candidate).resolve()
+        lexical = candidate if candidate.is_absolute() else workspace / candidate
+        if lexical.is_symlink():
+            raise HarnessError(f"artifact must be a non-symlink regular file: {artifact}")
+        resolved = lexical.resolve()
         try:
-            relative = resolved.relative_to(workspace)
+            resolved.relative_to(workspace)
         except ValueError as exc:
             raise HarnessError(f"artifact must be inside the workspace: {artifact}") from exc
-        if not resolved.exists():
-            raise HarnessError(f"artifact does not exist: {artifact}")
-        validated.append(relative.as_posix())
+        if resolved.is_symlink() or not resolved.is_file():
+            raise HarnessError(f"artifact must be a non-symlink regular file: {artifact}")
+        validated.append(regular_file_metadata(resolved, workspace))
     return validated
 
 
@@ -999,6 +1095,11 @@ def command_record(
     summary = summary.strip()
     if not summary:
         raise HarnessError("summary must not be empty")
+    if check["type"] == "browser" and result == "passed":
+        if not isinstance(tool, str) or not tool.strip():
+            raise HarnessError("passed browser evidence requires --tool")
+        if not artifacts:
+            raise HarnessError("passed browser evidence requires at least one --artifact")
     validated_artifacts = validate_artifacts(workspace, artifacts)
     evidence_path, evidence_sha256 = create_evidence(
         workspace,

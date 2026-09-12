@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import queue
@@ -427,7 +428,11 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(0, evidence["exit_code"])
         self.assertEqual("command", evidence["method"])
         self.assertEqual("passed", evidence["result"])
-        self.assertIn("verified", (self.workspace / evidence["log_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(2, evidence["schema_version"])
+        self.assertEqual("file", evidence["log"]["type"])
+        log_path = self.workspace / evidence["log"]["path"]
+        self.assertIn("verified", log_path.read_text(encoding="utf-8"))
+        self.assertEqual(evidence["log"]["sha256"], hashlib.sha256(log_path.read_bytes()).hexdigest())
 
     def test_third_consecutive_command_failure_blocks_task_and_preserves_evidence(self):
         tasks = base_tasks(command=[sys.executable, "-c", "print('broken'); raise SystemExit(7)"])
@@ -456,6 +461,7 @@ class HarnessCliTest(unittest.TestCase):
 
         rejected = self.run_cli(
             "record", "task-1", "check-1", "--result", "passed", "--summary", "clicked",
+            "--tool", "browser",
             "--artifact", str(outside),
         )
 
@@ -473,7 +479,105 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(0, accepted.returncode, accepted.stderr)
         check = self.read_tasks()["tasks"][0]["acceptance"][0]
         evidence = json.loads((self.workspace / check["latest_evidence"]).read_text(encoding="utf-8"))
-        self.assertEqual(["proof/todo.png"], evidence["artifacts"])
+        self.assertEqual("proof/todo.png", evidence["artifacts"][0]["path"])
+        self.assertEqual("file", evidence["artifacts"][0]["type"])
+
+    def test_record_browser_pass_requires_tool_and_artifact(self):
+        self.write_json("tasks.json", base_tasks(check_type="browser"))
+        self.assertEqual(0, self.run_cli("next").returncode)
+        proof = self.workspace / "proof.png"
+        proof.write_bytes(b"proof")
+
+        without_tool = self.run_cli(
+            "record", "task-1", "check-1", "--result", "passed", "--summary", "observed",
+            "--artifact", "proof.png",
+        )
+        without_artifact = self.run_cli(
+            "record", "task-1", "check-1", "--result", "passed", "--summary", "observed",
+            "--tool", "browser",
+        )
+
+        self.assertEqual(2, without_tool.returncode)
+        self.assertIn("tool", without_tool.stderr)
+        self.assertEqual(2, without_artifact.returncode)
+        self.assertIn("artifact", without_artifact.stderr)
+        self.assertFalse((self.harness_dir / "evidence").exists())
+
+    def test_record_rejects_directory_artifact(self):
+        self.write_json("tasks.json", base_tasks(check_type="browser"))
+        self.assertEqual(0, self.run_cli("next").returncode)
+        (self.workspace / "proof-dir").mkdir()
+
+        result = self.run_cli(
+            "record", "task-1", "check-1", "--result", "passed", "--summary", "observed",
+            "--tool", "browser", "--artifact", "proof-dir",
+        )
+
+        self.assertEqual(2, result.returncode)
+        self.assertIn("regular file", result.stderr)
+
+    def test_record_rejects_symlink_artifact_even_when_target_is_inside_workspace(self):
+        self.write_json("tasks.json", base_tasks(check_type="browser"))
+        self.assertEqual(0, self.run_cli("next").returncode)
+        target = self.workspace / "proof-target.png"
+        target.write_bytes(b"proof")
+        (self.workspace / "proof-link.png").symlink_to(target)
+
+        result = self.run_cli(
+            "record", "task-1", "check-1", "--result", "passed", "--summary", "observed",
+            "--tool", "browser", "--artifact", "proof-link.png",
+        )
+
+        self.assertEqual(2, result.returncode)
+        self.assertIn("non-symlink", result.stderr)
+
+    def test_complete_rejects_tampered_artifact_payload(self):
+        self.write_json("tasks.json", base_tasks(check_type="browser"))
+        self.assertEqual(0, self.run_cli("next").returncode)
+        proof = self.workspace / "proof.png"
+        proof.write_bytes(b"original proof")
+        self.assertEqual(
+            0,
+            self.run_cli(
+                "record", "task-1", "check-1", "--result", "passed", "--summary", "observed",
+                "--tool", "browser", "--artifact", "proof.png",
+            ).returncode,
+        )
+        proof.write_bytes(b"tampered proof")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("artifact digest", result.stderr)
+
+    def test_complete_rejects_tampered_command_log(self):
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        check = self.read_tasks()["tasks"][0]["acceptance"][0]
+        evidence = json.loads((self.workspace / check["latest_evidence"]).read_text())
+        (self.workspace / evidence["log"]["path"]).write_text("tampered\n", encoding="utf-8")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("log digest", result.stderr)
+
+    def test_record_rejects_symlinked_evidence_root_before_external_write(self):
+        self.write_json("tasks.json", base_tasks(check_type="manual"))
+        self.assertEqual(0, self.run_cli("next").returncode)
+        external = Path(self.temp_dir.name).parent / f"external-evidence-{os.getpid()}"
+        external.mkdir(exist_ok=False)
+        self.addCleanup(lambda: shutil.rmtree(external, ignore_errors=True))
+        (self.harness_dir / "evidence").symlink_to(external, target_is_directory=True)
+
+        result = self.run_cli(
+            "record", "task-1", "check-1", "--result", "passed", "--summary", "observed",
+        )
+
+        self.assertEqual(2, result.returncode)
+        self.assertIn("symbolic link", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual([], list(external.rglob("*")))
 
     def test_unverified_result_prevents_completion(self):
         self.write_json("tasks.json", base_tasks(check_type="manual"))
