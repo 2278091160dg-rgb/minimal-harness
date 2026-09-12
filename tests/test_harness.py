@@ -658,6 +658,81 @@ class HarnessCliTest(unittest.TestCase):
         self.assertIn("outside allowed_paths", result.stderr)
         self.assertIn("outside.txt", result.stderr)
 
+    def test_complete_fails_closed_when_git_status_fails(self):
+        self.write_json("tasks.json", base_tasks(check_type="manual"))
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(
+            0,
+            self.run_cli(
+                "record", "task-1", "check-1", "--result", "passed", "--summary", "verified",
+            ).returncode,
+        )
+        (self.workspace / "outside.txt").write_text("unexpected", encoding="utf-8")
+        (self.workspace / ".git" / "index").write_bytes(b"corrupt-index")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("git status failed", result.stderr.lower())
+        self.assertEqual("in_progress", self.read_tasks()["tasks"][0]["status"])
+
+    def test_complete_detects_staged_change_hidden_behind_preexisting_dirty_worktree(self):
+        self.write_json("tasks.json", base_tasks(check_type="manual"))
+        outside = self.workspace / "outside.txt"
+        outside.write_text("committed base", encoding="utf-8")
+        self.initialize_git_repository()
+        outside.write_text("preexisting worktree", encoding="utf-8")
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(
+            0,
+            self.run_cli(
+                "record", "task-1", "check-1", "--result", "passed", "--summary", "verified",
+            ).returncode,
+        )
+        outside.write_text("task staged content", encoding="utf-8")
+        subprocess.run(["git", "add", "outside.txt"], cwd=self.workspace, check=True)
+        outside.write_text("preexisting worktree", encoding="utf-8")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("outside.txt", result.stderr)
+
+    def test_allowed_paths_single_star_does_not_cross_directory_separator(self):
+        self.write_json("tasks.json", base_tasks(check_type="manual"))
+        config = base_config()
+        config["policy"]["allowed_paths"] = ["src/*", ".harness/**"]
+        self.write_json("config.json", config)
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(
+            0,
+            self.run_cli(
+                "record", "task-1", "check-1", "--result", "passed", "--summary", "verified",
+            ).returncode,
+        )
+        nested = self.workspace / "src" / "deep" / "unexpected.txt"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("unexpected", encoding="utf-8")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("src/deep/unexpected.txt", result.stderr)
+
+    def test_doctor_rejects_unsafe_allowed_path_patterns(self):
+        for pattern in ("../outside/**", "/absolute/**", "src//file"):
+            with self.subTest(pattern=pattern):
+                config = base_config()
+                config["policy"]["allowed_paths"] = [pattern]
+                self.write_json("config.json", config)
+
+                result = self.run_cli("doctor")
+
+                self.assertEqual(2, result.returncode)
+                self.assertIn("allowed_paths", result.stderr)
+
     def test_handoff_marks_new_out_of_scope_git_changes(self):
         self.write_json("tasks.json", base_tasks(check_type="manual"))
         self.initialize_git_repository()

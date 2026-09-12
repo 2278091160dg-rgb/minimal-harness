@@ -39,6 +39,10 @@ class GateError(HarnessError):
     exit_code = 1
 
 
+class GitAuditError(HarnessError):
+    """Git exists for this workspace but could not provide a trustworthy snapshot."""
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -89,8 +93,20 @@ def validate_policy(policy: Any, field: str = "policy") -> None:
         value = policy.get(name)
         if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
             raise HarnessError(f"{field}.{name} must be an array of strings")
+    for pattern in policy["allowed_paths"]:
+        validate_allowed_path_pattern(pattern, f"{field}.allowed_paths")
     if not isinstance(policy.get("require_git_for_completion"), bool):
         raise HarnessError(f"{field}.require_git_for_completion must be a boolean")
+
+
+def validate_allowed_path_pattern(pattern: str, field: str) -> None:
+    normalized = pattern.replace("\\", "/")
+    if (
+        normalized.startswith("/")
+        or re.match(r"^[A-Za-z]:", normalized)
+        or any(part in {"", ".", ".."} for part in normalized.split("/"))
+    ):
+        raise HarnessError(f"{field} contains an unsafe relative pattern: {pattern}")
 
 
 def validate_config(config: Dict[str, Any]) -> None:
@@ -263,16 +279,27 @@ def effective_policy(task: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, 
     return task.get("policy_baseline") or config["policy"]
 
 
-def git_workspace_prefix(workspace: Path) -> str:
-    result = subprocess.run(
-        ["git", "rev-parse", "--show-prefix"],
-        cwd=workspace,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+def run_git(workspace: Path, arguments: List[str], operation: str) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(
+            ["git", *arguments],
+            cwd=workspace,
+            text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise GitAuditError(f"Git {operation} failed: {exc}") from exc
     if result.returncode != 0:
-        return ""
+        detail = result.stderr.strip() or f"exit code {result.returncode}"
+        raise GitAuditError(f"Git {operation} failed: {detail}")
+    return result
+
+
+def git_workspace_prefix(workspace: Path) -> str:
+    result = run_git(workspace, ["rev-parse", "--show-prefix"], "workspace prefix")
     return result.stdout.strip().replace("\\", "/").strip("/")
 
 
@@ -317,22 +344,41 @@ def git_snapshot(workspace: Path) -> Dict[str, Any]:
             "worktree_fingerprints": {},
             "index_fingerprints": {},
         }
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True, capture_output=True, check=False
-    )
-    branch = subprocess.run(
-        ["git", "branch", "--show-current"], cwd=workspace, text=True, capture_output=True, check=False
-    )
-    status = subprocess.run(
-        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."],
+    symbolic = subprocess.run(
+        ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
         cwd=workspace,
         text=True,
+        encoding="utf-8",
+        errors="surrogateescape",
         capture_output=True,
         check=False,
     )
+    if symbolic.returncode not in {0, 1}:
+        raise GitAuditError(f"Git branch failed: {symbolic.stderr.strip()}")
+    branch_name = symbolic.stdout.strip() if symbolic.returncode == 0 else "DETACHED"
+    head_result = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"],
+        cwd=workspace,
+        text=True,
+        encoding="utf-8",
+        errors="surrogateescape",
+        capture_output=True,
+        check=False,
+    )
+    if head_result.returncode == 0:
+        head_value = head_result.stdout.strip()
+    elif symbolic.returncode == 0:
+        head_value = None
+    else:
+        raise GitAuditError(f"Git HEAD failed: {head_result.stderr.strip()}")
+    status = run_git(
+        workspace,
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."],
+        "status",
+    )
     prefix = git_workspace_prefix(workspace)
     dirty_paths: List[str] = []
-    entries = status.stdout.split("\0") if status.returncode == 0 else []
+    entries = status.stdout.split("\0")
     index = 0
     while index < len(entries):
         entry = entries[index]
@@ -354,13 +400,15 @@ def git_snapshot(workspace: Path) -> Dict[str, Any]:
         "version": SCHEMA_VERSION,
         "captured_at": utc_now(),
         "available": True,
-        "branch": branch.stdout.strip() or "DETACHED",
-        "head": head.stdout.strip() if head.returncode == 0 else None,
+        "branch": branch_name,
+        "head": head_value,
         "dirty_paths": unique_dirty_paths,
         "worktree_fingerprints": {
             path: workspace_path_fingerprint(workspace, path) for path in unique_dirty_paths
         },
-        "index_fingerprints": {path: "legacy-unimplemented" for path in unique_dirty_paths},
+        "index_fingerprints": {
+            path: git_index_fingerprint(workspace, path) for path in unique_dirty_paths
+        },
     }
 
 
@@ -376,6 +424,12 @@ def workspace_path_fingerprint(workspace: Path, path: str) -> str:
     except OSError as exc:
         return f"error:{exc.errno}"
     return "missing"
+
+
+def git_index_fingerprint(workspace: Path, path: str) -> str:
+    result = run_git(workspace, ["ls-files", "--stage", "-z", "--", path], "index read")
+    payload = result.stdout.encode("utf-8", "surrogateescape")
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
 
 
 def git_committed_changes(workspace: Path, baseline_head: Optional[str], current_head: Optional[str]) -> List[str]:
@@ -418,6 +472,9 @@ def changed_paths_since_baseline(
     for path, fingerprint in baseline.get("worktree_fingerprints", {}).items():
         if workspace_path_fingerprint(workspace, path) != fingerprint:
             changed.add(path)
+    for path, fingerprint in baseline.get("index_fingerprints", {}).items():
+        if git_index_fingerprint(workspace, path) != fingerprint:
+            changed.add(path)
     return sorted(changed)
 
 
@@ -425,11 +482,24 @@ def path_allowed(path: str, patterns: List[str]) -> bool:
     normalized = path.replace("\\", "/")
     for pattern in patterns:
         normalized_pattern = pattern.replace("\\", "/")
-        if fnmatch.fnmatchcase(normalized, normalized_pattern):
-            return True
-        if normalized_pattern.endswith("/**") and normalized == normalized_pattern[:-3]:
+        if path_segments_match(normalized.split("/"), normalized_pattern.split("/")):
             return True
     return False
+
+
+def path_segments_match(path_parts: List[str], pattern_parts: List[str]) -> bool:
+    if not pattern_parts:
+        return not path_parts
+    pattern = pattern_parts[0]
+    if pattern == "**":
+        return path_segments_match(path_parts, pattern_parts[1:]) or bool(
+            path_parts and path_segments_match(path_parts[1:], pattern_parts)
+        )
+    return bool(
+        path_parts
+        and fnmatch.fnmatchcase(path_parts[0], pattern)
+        and path_segments_match(path_parts[1:], pattern_parts[1:])
+    )
 
 
 def evidence_details_for_handoff(workspace: Path, check: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -963,7 +1033,10 @@ def command_complete(workspace: Path, task_id: str) -> int:
             validate_evidence_reference(workspace, harness_dir, task, check)
         except HarnessError as exc:
             raise GateError(f"acceptance {check['id']} lacks valid evidence: {exc}") from exc
-    current_snapshot = git_snapshot(workspace)
+    try:
+        current_snapshot = git_snapshot(workspace)
+    except GitAuditError as exc:
+        raise GateError(str(exc)) from exc
     baseline = task["git_baseline"]
     if effective_policy(task, config)["require_git_for_completion"] and not baseline["available"]:
         raise GateError("Git baseline is required for completion")
