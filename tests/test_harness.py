@@ -16,13 +16,15 @@ SCRIPT = PROJECT_ROOT / "template" / ".harness" / "harness.py"
 
 def base_config():
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "project_name": "Test project",
         "commands": {"setup": None, "start": None, "check": [sys.executable, "-c", "print('ok')"]},
         "policy": {
+            "schema_version": 2,
             "max_consecutive_failures": 3,
             "allowed_paths": ["src/**", "tests/**", ".harness/**"],
             "approval_required_operations": ["delete files", "git commit or push"],
+            "require_git_for_completion": False,
         },
     }
 
@@ -41,7 +43,7 @@ def base_tasks(check_type="command", command=None):
     else:
         acceptance["steps"] = ["Perform the action", "Observe the result"]
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "current_task_id": None,
         "tasks": [
             {
@@ -67,6 +69,43 @@ def base_tasks(check_type="command", command=None):
                 ],
             },
         ],
+    }
+
+
+def v2_config():
+    value = base_config()
+    value["policy"]["require_git_for_completion"] = True
+    return value
+
+
+def v2_tasks(check_type="command", command=None):
+    return base_tasks(check_type=check_type, command=command)
+
+
+def v1_config():
+    value = base_config()
+    value["schema_version"] = 1
+    value["policy"].pop("require_git_for_completion")
+    value["policy"].pop("schema_version")
+    return value
+
+
+def v1_tasks(check_type="command", command=None):
+    value = base_tasks(check_type=check_type, command=command)
+    value["schema_version"] = 1
+    return value
+
+
+def unavailable_git_baseline():
+    return {
+        "version": 2,
+        "captured_at": "2026-09-12T00:00:00Z",
+        "available": False,
+        "branch": None,
+        "head": None,
+        "dirty_paths": [],
+        "worktree_fingerprints": {},
+        "index_fingerprints": {},
     }
 
 
@@ -125,6 +164,89 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(2, result.returncode)
         self.assertIn("schema_version", result.stderr)
 
+    def test_v2_doctor_rejects_active_task_without_frozen_baselines(self):
+        self.write_json("config.json", v2_config())
+        tasks = v2_tasks(check_type="manual")
+        tasks["current_task_id"] = "task-1"
+        tasks["tasks"][0]["status"] = "in_progress"
+        tasks["tasks"][0]["started_at"] = "2026-09-12T00:00:00Z"
+        tasks["tasks"][0]["policy_baseline"] = dict(v2_config()["policy"])
+        self.write_json("tasks.json", tasks)
+
+        result = self.run_cli("doctor")
+
+        self.assertEqual(2, result.returncode)
+        self.assertIn("git_baseline", result.stderr)
+
+    def test_v2_doctor_rejects_impossible_blocked_state(self):
+        self.write_json("config.json", v2_config())
+        tasks = v2_tasks(check_type="manual")
+        task = tasks["tasks"][0]
+        tasks["current_task_id"] = "task-1"
+        task["status"] = "blocked"
+        task["started_at"] = "2026-09-12T00:00:00Z"
+        task["blocked_at"] = "2026-09-12T00:01:00Z"
+        task["block_reason"] = "forged"
+        task["git_baseline"] = {
+            "version": 2,
+            "captured_at": "2026-09-12T00:00:00Z",
+            "available": False,
+            "branch": None,
+            "head": None,
+            "dirty_paths": [],
+            "worktree_fingerprints": {},
+            "index_fingerprints": {},
+        }
+        task["policy_baseline"] = dict(v2_config()["policy"])
+        self.write_json("tasks.json", tasks)
+
+        result = self.run_cli("doctor")
+
+        self.assertEqual(2, result.returncode)
+        self.assertIn("failure limit", result.stderr)
+
+    def test_migrate_dry_run_is_read_only_then_upgrades_pending_v1_state(self):
+        self.write_json("config.json", v1_config())
+        self.write_json("tasks.json", v1_tasks())
+        before_config = (self.harness_dir / "config.json").read_bytes()
+        before_tasks = (self.harness_dir / "tasks.json").read_bytes()
+
+        dry_run = self.run_cli("migrate", "--dry-run")
+
+        self.assertEqual(0, dry_run.returncode, dry_run.stderr)
+        self.assertIn("would migrate", dry_run.stdout)
+        self.assertEqual(before_config, (self.harness_dir / "config.json").read_bytes())
+        self.assertEqual(before_tasks, (self.harness_dir / "tasks.json").read_bytes())
+
+        migrated = self.run_cli("migrate")
+
+        self.assertEqual(0, migrated.returncode, migrated.stderr)
+        self.assertEqual(2, json.loads((self.harness_dir / "config.json").read_text())["schema_version"])
+        self.assertEqual(2, self.read_tasks()["schema_version"])
+        self.assertTrue(list((self.harness_dir / "migrations").glob("*/manifest.json")))
+        repeated = self.run_cli("migrate")
+        self.assertEqual(0, repeated.returncode, repeated.stderr)
+        self.assertIn("already schema v2", repeated.stdout)
+
+    def test_migrate_active_v1_state_requires_note_and_rebaselines(self):
+        self.write_json("config.json", v1_config())
+        tasks = v1_tasks(check_type="manual")
+        tasks["current_task_id"] = "task-1"
+        tasks["tasks"][0]["status"] = "in_progress"
+        tasks["tasks"][0]["started_at"] = "2026-09-12T00:00:00Z"
+        self.write_json("tasks.json", tasks)
+
+        rejected = self.run_cli("migrate")
+        accepted = self.run_cli("migrate", "--note", "acknowledge v1 baseline discontinuity")
+
+        self.assertEqual(2, rejected.returncode)
+        self.assertIn("--note", rejected.stderr)
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+        task = self.read_tasks()["tasks"][0]
+        self.assertEqual(2, task["git_baseline"]["version"])
+        self.assertEqual(2, task["policy_baseline"]["schema_version"])
+        self.assertEqual("acknowledge v1 baseline discontinuity", task["migration_history"][-1]["note"])
+
     def test_doctor_rejects_task_id_that_can_escape_evidence_directory(self):
         tasks = base_tasks(check_type="manual")
         tasks["tasks"][0]["id"] = "../../../escape"
@@ -170,6 +292,11 @@ class HarnessCliTest(unittest.TestCase):
         tasks = base_tasks(check_type="manual")
         task = tasks["tasks"][0]
         task["status"] = "blocked"
+        task["started_at"] = "2026-09-12T00:00:00Z"
+        task["blocked_at"] = "2026-09-12T00:01:00Z"
+        task["block_reason"] = "failure limit"
+        task["policy_baseline"] = dict(base_config()["policy"])
+        task["git_baseline"] = unavailable_git_baseline()
         task["acceptance"][0]["status"] = "failed"
         task["acceptance"][0]["consecutive_failures"] = 3
         self.write_json("tasks.json", tasks)

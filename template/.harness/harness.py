@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import fnmatch
 import hashlib
 import json
@@ -23,6 +24,7 @@ TASK_STATUSES = {"pending", "in_progress", "blocked", "done"}
 CHECK_STATUSES = {"not_run", "passed", "failed", "unverified"}
 CHECK_TYPES = {"command", "browser", "manual"}
 SAFE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+SCHEMA_VERSION = 2
 
 
 class HarnessError(Exception):
@@ -75,9 +77,27 @@ def validate_argv(value: Any, field: str, optional: bool = False) -> None:
         raise HarnessError(f"{field} must be null or a non-empty array of strings")
 
 
+def validate_policy(policy: Any, field: str = "policy") -> None:
+    if not isinstance(policy, dict):
+        raise HarnessError(f"{field} must be an object")
+    if policy.get("schema_version") != SCHEMA_VERSION:
+        raise HarnessError(f"{field}.schema_version must be {SCHEMA_VERSION}")
+    limit = policy.get("max_consecutive_failures")
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+        raise HarnessError(f"{field}.max_consecutive_failures must be a positive integer")
+    for name in ("allowed_paths", "approval_required_operations"):
+        value = policy.get(name)
+        if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+            raise HarnessError(f"{field}.{name} must be an array of strings")
+    if not isinstance(policy.get("require_git_for_completion"), bool):
+        raise HarnessError(f"{field}.require_git_for_completion must be a boolean")
+
+
 def validate_config(config: Dict[str, Any]) -> None:
-    if config.get("schema_version") != 1:
-        raise HarnessError("config schema_version must be 1")
+    if config.get("schema_version") != SCHEMA_VERSION:
+        raise HarnessError(
+            f"config schema_version must be {SCHEMA_VERSION}; run `python3 .harness/harness.py migrate`"
+        )
     require_string(config.get("project_name"), "project_name")
     commands = config.get("commands")
     if not isinstance(commands, dict):
@@ -86,21 +106,35 @@ def validate_config(config: Dict[str, Any]) -> None:
         if name not in commands:
             raise HarnessError(f"commands.{name} is required")
         validate_argv(commands[name], f"commands.{name}", optional=True)
-    policy = config.get("policy")
-    if not isinstance(policy, dict):
-        raise HarnessError("policy must be an object")
-    limit = policy.get("max_consecutive_failures")
-    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
-        raise HarnessError("policy.max_consecutive_failures must be a positive integer")
-    for name in ("allowed_paths", "approval_required_operations"):
-        value = policy.get(name)
-        if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
-            raise HarnessError(f"policy.{name} must be an array of strings")
+    validate_policy(config.get("policy"))
+
+
+def validate_git_baseline(value: Any, field: str) -> None:
+    if not isinstance(value, dict):
+        raise HarnessError(f"{field} must be an object")
+    if value.get("version") != SCHEMA_VERSION:
+        raise HarnessError(f"{field}.version must be {SCHEMA_VERSION}")
+    require_string(value.get("captured_at"), f"{field}.captured_at")
+    if not isinstance(value.get("available"), bool):
+        raise HarnessError(f"{field}.available must be a boolean")
+    for name in ("dirty_paths",):
+        paths = value.get(name)
+        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+            raise HarnessError(f"{field}.{name} must be an array of strings")
+    for name in ("worktree_fingerprints", "index_fingerprints"):
+        fingerprints = value.get(name)
+        if not isinstance(fingerprints, dict) or not all(
+            isinstance(path, str) and isinstance(digest, str)
+            for path, digest in fingerprints.items()
+        ):
+            raise HarnessError(f"{field}.{name} must be an object of string fingerprints")
 
 
 def validate_tasks(state: Dict[str, Any]) -> None:
-    if state.get("schema_version") != 1:
-        raise HarnessError("tasks schema_version must be 1")
+    if state.get("schema_version") != SCHEMA_VERSION:
+        raise HarnessError(
+            f"tasks schema_version must be {SCHEMA_VERSION}; run `python3 .harness/harness.py migrate`"
+        )
     tasks = state.get("tasks")
     if not isinstance(tasks, list):
         raise HarnessError("tasks must be an array")
@@ -119,21 +153,7 @@ def validate_tasks(state: Dict[str, Any]) -> None:
             raise HarnessError(f"task {task_id} has invalid status")
         policy_baseline = task.get("policy_baseline")
         if policy_baseline is not None:
-            if not isinstance(policy_baseline, dict):
-                raise HarnessError(f"task {task_id} policy_baseline must be an object")
-            limit = policy_baseline.get("max_consecutive_failures")
-            if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
-                raise HarnessError(
-                    f"task {task_id} policy_baseline.max_consecutive_failures must be positive"
-                )
-            for name in ("allowed_paths", "approval_required_operations"):
-                value = policy_baseline.get(name)
-                if not isinstance(value, list) or not all(
-                    isinstance(item, str) and item for item in value
-                ):
-                    raise HarnessError(
-                        f"task {task_id} policy_baseline.{name} must be an array of strings"
-                    )
+            validate_policy(policy_baseline, f"task {task_id} policy_baseline")
         if task["status"] == "in_progress":
             active_ids.append(task_id)
         if task["status"] == "blocked":
@@ -165,6 +185,20 @@ def validate_tasks(state: Dict[str, Any]) -> None:
                     raise HarnessError(f"acceptance {check_id} steps must be a non-empty array of strings")
         if task["status"] == "done" and any(check["status"] != "passed" for check in checks):
             raise HarnessError(f"done task {task_id} must have all acceptance checks passed")
+        if task["status"] in {"in_progress", "blocked"}:
+            require_string(task.get("started_at"), f"task {task_id} started_at")
+            if policy_baseline is None:
+                raise HarnessError(f"task {task_id} policy_baseline is required while active")
+            validate_git_baseline(task.get("git_baseline"), f"task {task_id} git_baseline")
+        if task["status"] == "blocked":
+            require_string(task.get("blocked_at"), f"task {task_id} blocked_at")
+            require_string(task.get("block_reason"), f"task {task_id} block_reason")
+            limit = policy_baseline["max_consecutive_failures"]
+            if not any(
+                check["status"] == "failed" and check["consecutive_failures"] >= limit
+                for check in checks
+            ):
+                raise HarnessError(f"blocked task {task_id} must have an acceptance at the failure limit")
     if len(active_ids) > 1:
         raise HarnessError("only one task may be in_progress")
     if len(blocked_ids) > 1:
@@ -263,19 +297,25 @@ def git_snapshot(workspace: Path) -> Dict[str, Any]:
         )
     except OSError:
         return {
+            "version": SCHEMA_VERSION,
+            "captured_at": utc_now(),
             "available": False,
             "branch": None,
             "head": None,
             "dirty_paths": [],
-            "dirty_fingerprints": {},
+            "worktree_fingerprints": {},
+            "index_fingerprints": {},
         }
     if probe.returncode != 0 or probe.stdout.strip() != "true":
         return {
+            "version": SCHEMA_VERSION,
+            "captured_at": utc_now(),
             "available": False,
             "branch": None,
             "head": None,
             "dirty_paths": [],
-            "dirty_fingerprints": {},
+            "worktree_fingerprints": {},
+            "index_fingerprints": {},
         }
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=workspace, text=True, capture_output=True, check=False
@@ -311,13 +351,16 @@ def git_snapshot(workspace: Path) -> Dict[str, Any]:
                 dirty_paths.append(relative)
     unique_dirty_paths = sorted(set(dirty_paths))
     return {
+        "version": SCHEMA_VERSION,
+        "captured_at": utc_now(),
         "available": True,
         "branch": branch.stdout.strip() or "DETACHED",
         "head": head.stdout.strip() if head.returncode == 0 else None,
         "dirty_paths": unique_dirty_paths,
-        "dirty_fingerprints": {
+        "worktree_fingerprints": {
             path: workspace_path_fingerprint(workspace, path) for path in unique_dirty_paths
         },
+        "index_fingerprints": {path: "legacy-unimplemented" for path in unique_dirty_paths},
     }
 
 
@@ -372,7 +415,7 @@ def changed_paths_since_baseline(
     changed = set(git_committed_changes(workspace, baseline.get("head"), current.get("head")))
     baseline_dirty = set(baseline.get("dirty_paths", []))
     changed.update(set(current.get("dirty_paths", [])) - baseline_dirty)
-    for path, fingerprint in baseline.get("dirty_fingerprints", {}).items():
+    for path, fingerprint in baseline.get("worktree_fingerprints", {}).items():
         if workspace_path_fingerprint(workspace, path) != fingerprint:
             changed.add(path)
     return sorted(changed)
@@ -754,11 +797,13 @@ def command_next(workspace: Path) -> int:
     task["started_at"] = utc_now()
     task["git_baseline"] = git_snapshot(workspace)
     task["policy_baseline"] = {
+        "schema_version": SCHEMA_VERSION,
         "max_consecutive_failures": config["policy"]["max_consecutive_failures"],
         "allowed_paths": list(config["policy"]["allowed_paths"]),
         "approval_required_operations": list(
             config["policy"]["approval_required_operations"]
         ),
+        "require_git_for_completion": config["policy"]["require_git_for_completion"],
     }
     state["current_task_id"] = task["id"]
     atomic_write_json(harness_dir / "tasks.json", state)
@@ -919,7 +964,9 @@ def command_complete(workspace: Path, task_id: str) -> int:
         except HarnessError as exc:
             raise GateError(f"acceptance {check['id']} lacks valid evidence: {exc}") from exc
     current_snapshot = git_snapshot(workspace)
-    baseline = task.get("git_baseline") or {"available": False, "dirty_paths": []}
+    baseline = task["git_baseline"]
+    if effective_policy(task, config)["require_git_for_completion"] and not baseline["available"]:
+        raise GateError("Git baseline is required for completion")
     if baseline.get("available"):
         changed_paths = changed_paths_since_baseline(workspace, baseline, current_snapshot)
         outside = sorted(
@@ -965,6 +1012,88 @@ def command_handoff(workspace: Path) -> int:
     return 0
 
 
+def migrated_policy(policy: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "max_consecutive_failures": policy["max_consecutive_failures"],
+        "allowed_paths": list(policy["allowed_paths"]),
+        "approval_required_operations": list(policy["approval_required_operations"]),
+        "require_git_for_completion": True,
+    }
+
+
+def command_migrate(workspace: Path, dry_run: bool, note: Optional[str]) -> int:
+    workspace = workspace.resolve()
+    harness_dir = workspace / ".harness"
+    source_config = read_json(harness_dir / "config.json")
+    source_state = read_json(harness_dir / "tasks.json")
+    versions = (source_config.get("schema_version"), source_state.get("schema_version"))
+    if versions == (SCHEMA_VERSION, SCHEMA_VERSION):
+        validate_config(source_config)
+        validate_tasks(source_state)
+        print("Harness is already schema v2.")
+        return 0
+    if versions != (1, 1):
+        raise HarnessError("config.json and tasks.json must both be schema v1 or both be schema v2")
+    active = next(
+        (task for task in source_state.get("tasks", []) if task.get("status") in {"in_progress", "blocked"}),
+        None,
+    )
+    clean_note = note.strip() if isinstance(note, str) else ""
+    if active is not None and not clean_note:
+        raise HarnessError("migrating an active or blocked v1 task requires --note")
+    if dry_run:
+        print("Harness would migrate schema v1 to v2; no files changed.")
+        return 0
+
+    target_config = copy.deepcopy(source_config)
+    target_config["schema_version"] = SCHEMA_VERSION
+    target_config["policy"] = migrated_policy(source_config["policy"])
+    target_state = copy.deepcopy(source_state)
+    target_state["schema_version"] = SCHEMA_VERSION
+    migration_time = utc_now()
+    for task in target_state.get("tasks", []):
+        status = task.get("status")
+        if status in {"in_progress", "blocked"}:
+            task["started_at"] = task.get("started_at") or migration_time
+            task["git_baseline"] = git_snapshot(workspace)
+            task["policy_baseline"] = copy.deepcopy(target_config["policy"])
+            task.setdefault("migration_history", []).append(
+                {"timestamp": migration_time, "from_schema": 1, "note": clean_note}
+            )
+            for check in task.get("acceptance", []):
+                if check.get("status") == "passed":
+                    check["legacy_evidence"] = {
+                        "path": check.get("latest_evidence"),
+                        "sha256": check.get("latest_evidence_sha256"),
+                    }
+                    check["status"] = "unverified"
+                    check["latest_evidence"] = None
+                    check["latest_evidence_sha256"] = None
+        elif status == "done":
+            task["legacy_evidence"] = True
+
+    validate_config(target_config)
+    validate_tasks(target_state)
+    migration_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    migration_dir = harness_dir / "migrations" / f"v1-to-v2-{migration_stamp}"
+    atomic_write_json(migration_dir / "config.v1.json", source_config)
+    atomic_write_json(migration_dir / "tasks.v1.json", source_state)
+    manifest = {
+        "schema_version": SCHEMA_VERSION,
+        "migrated_at": migration_time,
+        "source_config_sha256": file_sha256(migration_dir / "config.v1.json"),
+        "source_tasks_sha256": file_sha256(migration_dir / "tasks.v1.json"),
+        "active_task_rebaseline_note": clean_note or None,
+    }
+    atomic_write_json(migration_dir / "manifest.json", manifest)
+    atomic_write_json(harness_dir / "config.json", target_config)
+    atomic_write_json(harness_dir / "tasks.json", target_state)
+    refresh_handoff(workspace, harness_dir, target_config, target_state)
+    print(f"Migrated Harness schema v1 to v2; archive={migration_dir.relative_to(workspace)}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=None)
@@ -989,6 +1118,9 @@ def build_parser() -> argparse.ArgumentParser:
     unblock_parser.add_argument("task_id")
     unblock_parser.add_argument("--note", required=True)
     subparsers.add_parser("handoff")
+    migrate_parser = subparsers.add_parser("migrate")
+    migrate_parser.add_argument("--dry-run", action="store_true")
+    migrate_parser.add_argument("--note")
     return parser
 
 
@@ -1018,6 +1150,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return command_unblock(workspace, args.task_id, args.note)
         if args.command == "handoff":
             return command_handoff(workspace)
+        if args.command == "migrate":
+            return command_migrate(workspace, args.dry_run, args.note)
         raise HarnessError(f"unsupported command: {args.command}")
     except HarnessError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
