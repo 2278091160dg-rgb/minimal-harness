@@ -648,7 +648,10 @@ def workspace_path_fingerprint(workspace: Path, path: str) -> str:
                 f"Git cannot fingerprint non-regular dirty path: {escape_control_text(path)}"
             )
     except OSError as exc:
-        raise GitAuditError(f"Git worktree fingerprint failed for {path}: {exc}") from exc
+        raise GitAuditError(
+            f"Git worktree fingerprint failed for {escape_control_text(path)}: "
+            f"{escape_control_text(str(exc))}"
+        ) from exc
     return "missing"
 
 
@@ -837,7 +840,7 @@ def completed_task_evidence_label(
             ):
                 legacy = True
     except (HarnessError, OSError) as exc:
-        return f" [evidence invalid: {exc}]"
+        return f" [evidence invalid: {markdown_inline_text(exc)}]"
     return " [legacy evidence]" if legacy else ""
 
 
@@ -1043,7 +1046,9 @@ def render_handoff(workspace: Path, config: Dict[str, Any], state: Dict[str, Any
             else:
                 lines.append("None")
         except (GateError, GitAuditError) as exc:
-            lines.append(f"WARNING: Scope audit unavailable: {exc}")
+            lines.append(
+                f"WARNING: Scope audit unavailable: {markdown_inline_text(exc)}"
+            )
     relevant_task = current or (completed[0] if completed else None)
     baseline_dirty = (
         relevant_task.get("git_baseline", {}).get("dirty_paths", []) if relevant_task else []

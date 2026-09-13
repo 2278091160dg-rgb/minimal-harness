@@ -1258,6 +1258,41 @@ class HarnessCliTest(unittest.TestCase):
         self.assertNotIn("\x1b", result.stderr)
         self.assertIn(r"evil\x1b[31m.py", result.stderr)
 
+    @unittest.skipIf(os.name == "nt", "POSIX permissions and control filenames are required")
+    def test_git_fingerprint_error_escapes_path_and_os_error_controls(self):
+        self.write_json("config.json", v2_config())
+        self.initialize_git_repository()
+        malicious = self.workspace / "evil\nFORGED-DIAGNOSTIC\x1b[31m.py"
+        malicious.write_text("payload\n", encoding="utf-8")
+        malicious.chmod(0)
+
+        result = self.run_cli("next")
+
+        self.assertEqual(2, result.returncode)
+        self.assertNotIn("\nFORGED-DIAGNOSTIC", result.stderr)
+        self.assertNotIn("\x1b", result.stderr)
+        self.assertIn(r"evil\nFORGED-DIAGNOSTIC\x1b[31m.py", result.stderr)
+
+    def test_handoff_escapes_invalid_completed_evidence_reference(self):
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        self.assertEqual(0, self.run_cli("complete", "task-1").returncode)
+        tasks = self.read_tasks()
+        tasks["tasks"][0]["acceptance"][0]["latest_evidence"] = (
+            ".harness/evidence/task-1/evil\n- Evidence summary: FORGED *[link]*"
+        )
+        self.write_json("tasks.json", tasks)
+
+        result = self.run_cli("handoff")
+        handoff = (self.harness_dir / "HANDOFF.md").read_text(encoding="utf-8")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotIn("\n- Evidence summary: FORGED", handoff)
+        self.assertIn(
+            r"evil\\n- Evidence summary: FORGED \*\[link\]\*",
+            handoff,
+        )
+
     def test_complete_rejects_staged_change_after_pass(self):
         self.write_json("config.json", v2_config())
         source = self.workspace / "src" / "feature.py"
