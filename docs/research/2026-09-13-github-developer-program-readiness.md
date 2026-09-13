@@ -11,7 +11,7 @@ GitHub states that individual developers and companies may join when they have b
 
 Source: [GitHub Developer Program](https://docs.github.com/en/integrations/concepts/github-developer-program).
 
-This repository now has an optional Check Runs REST API adapter in development, so the technical integration criterion is substantially met. A dedicated public support address has not been authorized, so the support criterion is not yet operationally met.
+This repository now has an optional Check Runs REST API adapter in development, so the technical integration criterion is substantially met. The maintainer has authorized `2278091160@qq.com` as the public support address. Submission still waits for a public project and release.
 
 ## Current readiness snapshot
 
@@ -22,10 +22,10 @@ This repository now has an optional Check Runs REST API adapter in development, 
 | Least-privilege workflow | Ready locally | Pull requests verify with read-only contents access; Check Run publishing is isolated to trusted pushes with `checks: write`. |
 | Automated regression tests | Ready locally | Success, API failure, invalid JSON, network failure, non-UTF-8 error, and redirect credential-leak cases are covered. |
 | Public project | Blocked | The GitHub repository is private as of this snapshot. |
-| Support channel | Blocked | No dedicated support email has been authorized. Do not infer or publish a personal address. |
-| Release identity/privacy | Blocked | Reachable Git history contains a personal commit email. Public release requires explicit acceptance or an authorized history rewrite to a GitHub noreply address. |
-| CI proof | Pending | Push the release branch, observe all matrix jobs, then merge only if green. |
-| Release | Pending | No GitHub release exists and GitHub does not yet detect the local MIT license on the private default branch. |
+| Support channel | Ready | The maintainer authorized `2278091160@qq.com` as the public support address. |
+| Release identity/privacy | Accepted | The maintainer explicitly accepted public visibility of the same address in reachable Git history. No history rewrite is required. |
+| CI proof | Ready | PR #1 and the merged `main` commit passed Linux, macOS, Windows, Python 3.9/current, Node, Ruff, doctor, Todo, and real Chromium checks. |
+| Release | Pending | No GitHub release exists; the MIT license is present on the private default branch. |
 
 ## Integration assessment
 
@@ -37,12 +37,9 @@ For the first release, GitHub Actions' repository-scoped `GITHUB_TOKEN` is suffi
 
 ## Recommended application sequence
 
-1. Resolve commit-email privacy before changing repository visibility.
-2. Push the feature branch while the repository remains private and obtain green GitHub Actions evidence.
-3. Merge to `main`, verify the MIT license and security documentation render correctly, and create a minimal tagged release.
-4. Create or explicitly authorize a dedicated support address that can be published and monitored.
-5. Make the repository public only after the owner approves the visibility and history decision.
-6. Submit the Developer Program application with the public repository, API integration description, support address, and release link.
+1. Make the repository public only after the owner explicitly approves the visibility change.
+2. Verify the MIT license and security documentation render correctly, then create a minimal tagged release.
+3. Submit the Developer Program application with the public repository, API integration description, support address, and release link.
 
 ## What not to claim
 
@@ -53,4 +50,4 @@ For the first release, GitHub Actions' repository-scoped `GITHUB_TOKEN` is suffi
 
 ## Final recommendation
 
-Proceed with private CI and release preparation now. Defer public release and Developer Program submission until both owner-controlled blockers are resolved: commit-email privacy and a publishable support address.
+Email/privacy and CI gates are resolved. Defer public release and Developer Program submission until the owner explicitly authorizes changing repository visibility.
