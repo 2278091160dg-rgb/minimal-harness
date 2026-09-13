@@ -164,4 +164,3 @@ Stop instead of publishing if secret scanning is uncertain, CI is not green, rep
 - The optional GitHub adapter is tested and isolated from the core runtime.
 - Public release occurs only after clean-history and CI gates.
 - Developer Program submission remains blocked only on an explicitly authorized support address.
-

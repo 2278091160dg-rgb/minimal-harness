@@ -141,6 +141,23 @@ class GitHubIntegrationTest(unittest.TestCase):
         self.assertIn("server failed", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
+    def test_invalid_json_success_response_is_failure(self):
+        self.server.response_body = b"not-json"
+
+        result = self.run_publisher()
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("invalid JSON", result.stderr)
+
+    def test_network_failure_is_reported_without_traceback(self):
+        result = self.run_publisher(
+            env_overrides={"GITHUB_API_URL": "http://127.0.0.1:1"}
+        )
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("request failed", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
     def test_redirect_is_rejected_without_forwarding_authorization(self):
         self.server.response_status = 302
         self.server.response_body = b"redirect"

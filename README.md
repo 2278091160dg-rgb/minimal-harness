@@ -127,7 +127,7 @@ python3 .harness/harness.py record TASK_ID CHECK_ID \
 
 每次结果会新增不可覆盖的 schema v3 evidence JSON。配置、任务状态、policy 和任务 Git baseline 仍保持 schema v2；evidence 单独升级，避免无关状态迁移。最新 evidence JSON、命令日志和每个附件都记录大小及 SHA-256；doctor、handoff 和 complete 会验证路径、文件类型、摘要及任务/验收字段。
 
-v3 evidence 还会保存验收完成时的 Git verification subject，包括 branch、HEAD、unborn 状态、工作树指纹、index blob/stage 指纹和嵌套 workspace 位置。`complete` 会重新捕获当前 subject；即使后续修改仍位于 `allowed_paths`，只要发生在 passed 之后，也必须重新执行 `verify` 或 `record`。
+v3 evidence 还会保存验收完成时的 Git verification subject，包括 branch、HEAD、unborn 状态、工作树与 index 指纹、完整 tracked/ignored 文件清单指纹，以及嵌套 workspace 位置。全量清单会捕获 `assume-unchanged`、`skip-worktree` 和被 `.gitignore` 隐藏的修改；子模块状态也按不忽略方式检查。`complete` 会重新捕获当前 subject，并直接比较 HEAD；即使文件树恢复原样、后续修改仍位于 `allowed_paths`，只要验证后的 Git 历史或相关内容发生变化，就必须重新执行 `verify` 或 `record`。
 
 为了避免 evidence 自己使自己过期，新鲜度比较只排除 Harness 生成的可变状态：`tasks.json`、`evidence/**`、`logs/**`、`HANDOFF.md` 和 `migrations/**`。`harness.py`、`config.json`、适配器和普通项目文件不会被排除。
 
@@ -147,7 +147,7 @@ python3 .harness/harness.py unblock TASK_ID --note "处理了什么"
 python3 .harness/harness.py complete TASK_ID
 ```
 
-任何 Git status、branch、HEAD 或 index 读取不确定都会 fail closed。若任务领取时明确冻结了 `require_git_for_completion: false`，可以不使用 Git 新鲜度门禁，但 doctor、handoff 和 complete 都会显示 `not Git-bound by policy` 警告。
+任何 Git status、branch、HEAD、index、tracked/ignored 文件清单或子模块状态读取不确定都会 fail closed。若任务领取时明确冻结了 `require_git_for_completion: false`，可以不使用 Git 新鲜度门禁，但 doctor、handoff 和 complete 都会显示 `not Git-bound by policy` 警告。
 
 ## 5. 跨会话交接
 

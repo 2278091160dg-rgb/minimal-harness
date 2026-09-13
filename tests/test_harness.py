@@ -945,8 +945,13 @@ class HarnessCliTest(unittest.TestCase):
         self.write_json("tasks.json", tasks)
 
         result = self.run_cli("doctor")
+        handoff_result = self.run_cli("handoff")
+        handoff = (self.harness_dir / "HANDOFF.md").read_text(encoding="utf-8")
 
         self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("legacy schema v2 evidence", result.stdout)
+        self.assertEqual(0, handoff_result.returncode, handoff_result.stderr)
+        self.assertIn("legacy evidence", handoff)
 
     def test_git_opt_out_labels_evidence_as_not_git_bound(self):
         self.assertEqual(0, self.run_cli("next").returncode)
@@ -1009,8 +1014,144 @@ class HarnessCliTest(unittest.TestCase):
 
         self.assertEqual(2, doctor.returncode)
         self.assertIn("verification_subject", doctor.stderr)
-        self.assertEqual(1, completed.returncode)
+        self.assertEqual(2, completed.returncode)
         self.assertIn("valid evidence", completed.stderr)
+
+    def test_ignored_file_created_after_pass_stales_evidence(self):
+        self.write_json("config.json", v2_config())
+        (self.workspace / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        (self.workspace / "ignored.py").write_text("SECRET = 1\n", encoding="utf-8")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("ignored.py", result.stderr)
+
+    def test_ignored_file_edit_after_pass_stales_evidence(self):
+        self.write_json("config.json", v2_config())
+        (self.workspace / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
+        ignored = self.workspace / "ignored.py"
+        ignored.write_text("SECRET = 1\n", encoding="utf-8")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        ignored.write_text("SECRET = 2\n", encoding="utf-8")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("ignored.py", result.stderr)
+
+    def test_assume_unchanged_file_edit_after_pass_stales_evidence(self):
+        self.write_json("config.json", v2_config())
+        source = self.workspace / "src" / "feature.py"
+        source.parent.mkdir()
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        subprocess.run(
+            ["git", "update-index", "--assume-unchanged", "src/feature.py"],
+            cwd=self.workspace,
+            check=True,
+        )
+        source.write_text("VALUE = 2\n", encoding="utf-8")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("src/feature.py", result.stderr)
+
+    def test_skip_worktree_file_edit_after_pass_stales_evidence(self):
+        self.write_json("config.json", v2_config())
+        source = self.workspace / "src" / "feature.py"
+        source.parent.mkdir()
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        subprocess.run(
+            ["git", "update-index", "--skip-worktree", "src/feature.py"],
+            cwd=self.workspace,
+            check=True,
+        )
+        source.write_text("VALUE = 2\n", encoding="utf-8")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("src/feature.py", result.stderr)
+
+    def test_empty_commit_after_pass_stales_evidence(self):
+        self.write_json("config.json", v2_config())
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        subprocess.run(
+            ["git", "commit", "--allow-empty", "-m", "empty after verification"],
+            cwd=self.workspace,
+            check=True,
+            capture_output=True,
+        )
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("HEAD changed", result.stderr)
+
+    def test_net_zero_commit_history_after_pass_stales_evidence(self):
+        self.write_json("config.json", v2_config())
+        source = self.workspace / "feature.py"
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        source.write_text("VALUE = 2\n", encoding="utf-8")
+        subprocess.run(["git", "add", "feature.py"], cwd=self.workspace, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "temporary change"],
+            cwd=self.workspace,
+            check=True,
+            capture_output=True,
+        )
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+        subprocess.run(["git", "add", "feature.py"], cwd=self.workspace, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "restore original tree"],
+            cwd=self.workspace,
+            check=True,
+            capture_output=True,
+        )
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("HEAD changed", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "backslash is a path separator on Windows")
+    def test_literal_backslash_filename_changed_after_pass_stales_evidence(self):
+        self.write_json("config.json", v2_config())
+        self.initialize_git_repository()
+        source = self.workspace / "pre\\dirty.py"
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        source.write_text("VALUE = 2\n", encoding="utf-8")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("pre\\dirty.py", result.stderr)
 
     def test_complete_rejects_staged_change_after_pass(self):
         self.write_json("config.json", v2_config())
@@ -1218,7 +1359,7 @@ class HarnessCliTest(unittest.TestCase):
 
         result = self.run_cli("complete", "task-1")
 
-        self.assertEqual(1, result.returncode)
+        self.assertEqual(2, result.returncode)
         self.assertIn("artifact digest", result.stderr)
 
     def test_complete_rejects_artifact_replaced_by_same_content_symlink(self):
@@ -1240,7 +1381,7 @@ class HarnessCliTest(unittest.TestCase):
 
         result = self.run_cli("complete", "task-1")
 
-        self.assertEqual(1, result.returncode)
+        self.assertEqual(2, result.returncode)
         self.assertIn("non-symlink", result.stderr)
 
     def test_complete_rejects_tampered_command_log(self):
@@ -1252,7 +1393,7 @@ class HarnessCliTest(unittest.TestCase):
 
         result = self.run_cli("complete", "task-1")
 
-        self.assertEqual(1, result.returncode)
+        self.assertEqual(2, result.returncode)
         self.assertIn("log digest", result.stderr)
 
     def test_record_rejects_symlinked_evidence_root_before_external_write(self):
@@ -1339,7 +1480,7 @@ class HarnessCliTest(unittest.TestCase):
 
         result = self.run_cli("complete", "task-1")
 
-        self.assertEqual(1, result.returncode)
+        self.assertEqual(2, result.returncode)
         self.assertIn("valid evidence", result.stderr)
         self.assertEqual("in_progress", self.read_tasks()["tasks"][0]["status"])
 
@@ -1361,7 +1502,7 @@ class HarnessCliTest(unittest.TestCase):
 
         self.assertEqual(2, doctor.returncode)
         self.assertIn("evidence file does not exist", doctor.stderr)
-        self.assertEqual(1, completed.returncode)
+        self.assertEqual(2, completed.returncode)
         self.assertIn("valid evidence", completed.stderr)
 
     def test_tampered_evidence_fails_integrity_check(self):
@@ -1382,7 +1523,7 @@ class HarnessCliTest(unittest.TestCase):
 
         result = self.run_cli("complete", "task-1")
 
-        self.assertEqual(1, result.returncode)
+        self.assertEqual(2, result.returncode)
         self.assertIn("digest does not match", result.stderr)
 
     def test_unblock_resets_counter_but_preserves_failure_evidence(self):
@@ -1727,6 +1868,59 @@ class HarnessCliTest(unittest.TestCase):
 
         self.assertEqual(2, result.returncode)
         self.assertIn("non-regular dirty path", result.stderr)
+
+    def test_complete_rejects_submodule_dirtied_after_pass(self):
+        source_dir = (
+            Path(self.temp_dir.name).parent / f"harness-submodule-post-pass-{os.getpid()}"
+        )
+        source_dir.mkdir()
+        self.addCleanup(lambda: shutil.rmtree(source_dir, ignore_errors=True))
+        subprocess.run(["git", "init"], cwd=source_dir, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "harness@example.test"],
+            cwd=source_dir,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Harness Test"], cwd=source_dir, check=True
+        )
+        (source_dir / "nested.txt").write_text("initial", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=source_dir, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "initial"], cwd=source_dir, check=True, capture_output=True
+        )
+        self.initialize_git_repository()
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                str(source_dir),
+                "vendor/submodule",
+            ],
+            cwd=self.workspace,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-am", "add submodule"],
+            cwd=self.workspace,
+            check=True,
+            capture_output=True,
+        )
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        (self.workspace / "vendor" / "submodule" / "nested.txt").write_text(
+            "dirty", encoding="utf-8"
+        )
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("cannot fingerprint non-regular dirty path", result.stderr)
+        self.assertIn("vendor/submodule", result.stderr)
 
     def test_allowed_paths_single_star_does_not_cross_directory_separator(self):
         self.write_json("tasks.json", base_tasks(check_type="manual"))

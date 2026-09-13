@@ -46,6 +46,9 @@ The subject records:
 - branch, HEAD, and unborn state;
 - dirty worktree fingerprints;
 - staged index blob/stage fingerprints.
+- complete tracked-file fingerprints, including paths hidden by `assume-unchanged` or `skip-worktree`;
+- complete ignored-file fingerprints;
+- non-ignored submodule status.
 
 The snapshot excludes only Harness-generated mutable state:
 
@@ -57,7 +60,7 @@ The snapshot excludes only Harness-generated mutable state:
 
 It does not exclude `.harness/harness.py`, `.harness/config.json`, adapters, ordinary project files, or user-supplied artifacts outside generated state. Changing the verifier or its policy after a pass therefore makes the evidence stale.
 
-Freshness validation compares the recorded subject with a new fail-closed Git snapshot. It detects branch changes, HEAD changes, committed changes, additions, modifications, deletions, renames, staged changes, unstaged changes, file type changes, and changes to files that were already dirty when verification ran.
+Freshness validation compares the recorded subject with a new fail-closed Git snapshot. It directly compares HEAD even when the final tree is unchanged, and detects branch changes, committed changes, additions, modifications, deletions, renames, staged changes, unstaged changes, ignored changes, index-suppressed changes, dirty submodules, file type changes, and changes to files that were already dirty when verification ran.
 
 Harness-generated state cannot invalidate the evidence that created it, avoiding a self-referential hash cycle.
 
