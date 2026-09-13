@@ -20,10 +20,11 @@ class ReleasePackageTest(unittest.TestCase):
         self.run_git("init")
         self.run_git("config", "user.name", "Release Test")
         self.run_git("config", "user.email", "release@example.invalid")
+        self.run_git("config", "core.autocrlf", "true")
 
         harness_dir = self.repo / "template" / ".harness"
         harness_dir.mkdir(parents=True)
-        (harness_dir / "harness.py").write_text("print('committed')\n", encoding="utf-8")
+        (harness_dir / "harness.py").write_bytes(b"print('committed')\r\n")
         (harness_dir / "config.json").write_text("{}\n", encoding="utf-8")
         self.run_git("add", "template/.harness")
         self.run_git("commit", "-m", "add harness template")

@@ -81,6 +81,10 @@ def build_release(repo, ref, version, output_dir):
 
     command = [
         "git",
+        "-c",
+        "core.autocrlf=false",
+        "-c",
+        "core.eol=lf",
         "-C",
         str(repo),
         "archive",
