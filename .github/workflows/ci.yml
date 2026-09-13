@@ -66,3 +66,7 @@ jobs:
           done
           curl --fail --silent http://127.0.0.1:8000/ >/dev/null
           python tests/todo_browser_acceptance.py
+          python tests/todo_browser_acceptance.py --artifact-dir "$RUNNER_TEMP/minimal-harness-proof"
+          test -s "$RUNNER_TEMP/minimal-harness-proof/add.png"
+          test -s "$RUNNER_TEMP/minimal-harness-proof/toggle.png"
+          test -s "$RUNNER_TEMP/minimal-harness-proof/persist.png"
