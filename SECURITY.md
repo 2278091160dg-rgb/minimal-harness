@@ -6,7 +6,7 @@ Minimal Harness is currently pre-1.0. Security fixes are made on the latest rele
 
 ## Reporting a vulnerability
 
-Use GitHub private vulnerability reporting when it is available in the repository Security tab. If that option is not visible, contact the maintainer through the repository owner's GitHub profile before sharing exploit details.
+Use GitHub private vulnerability reporting when it is available in the repository Security tab. If that option is not visible, email `2278091160@qq.com` before sharing exploit details.
 
 Do not include secrets, private repository contents, personal data, or working exploit details in a public issue.
 
