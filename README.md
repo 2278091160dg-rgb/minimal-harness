@@ -2,6 +2,10 @@
 
 这是一套可复制到任意代码项目的最小 Harness。它不调用 AI，也不把“代码写完”当作“用户可用”；它把任务、单项执行、真实验证、证据门禁和跨会话交接连接成可检查的闭环。
 
+**Minimal, dependency-free, fail-closed completion proof layer for coding agents.**
+
+它是独立 CLI 验收内核，不是 Codex Skill、Agent 编排器或操作系统沙箱。Codex、Claude Code、GitHub Copilot 等编码 Agent 都可以调用同一套命令。
+
 Harness v2 只依赖 Python 3.9+ 标准库。Node.js 和 Playwright 只用于仓库自带示例及开发验收。
 
 ## 1. 安装或升级
@@ -121,7 +125,13 @@ python3 .harness/harness.py record TASK_ID CHECK_ID \
   --summary "当前 Agent 没有浏览器工具"
 ```
 
-每次结果会新增不可覆盖的 schema v2 evidence JSON。最新 evidence JSON、命令日志和每个附件都记录大小及 SHA-256；doctor、handoff 和 complete 会验证路径、文件类型、摘要及任务/验收字段。
+每次结果会新增不可覆盖的 schema v3 evidence JSON。配置、任务状态、policy 和任务 Git baseline 仍保持 schema v2；evidence 单独升级，避免无关状态迁移。最新 evidence JSON、命令日志和每个附件都记录大小及 SHA-256；doctor、handoff 和 complete 会验证路径、文件类型、摘要及任务/验收字段。
+
+v3 evidence 还会保存验收完成时的 Git verification subject v2，包括 branch、HEAD、unborn 状态、工作树与 index 指纹、完整 tracked/ignored 文件清单指纹，以及嵌套 workspace 位置。全量清单会捕获 `assume-unchanged`、`skip-worktree` 和被 `.gitignore` 隐藏的修改；子模块状态也按不忽略方式检查。`complete` 会重新捕获当前 subject，并直接比较 HEAD；即使文件树恢复原样、后续修改仍位于 `allowed_paths`，只要验证后的 Git 历史或相关内容发生变化，就必须重新执行 `verify` 或 `record`。
+
+为了避免 evidence 自己使自己过期，新鲜度比较只排除 Harness 生成的可变状态：`tasks.json`、`evidence/**`、`logs/**`、`HANDOFF.md` 和 `migrations/**`。`harness.py`、`config.json`、适配器和普通项目文件不会被排除。
+
+活动任务引用的旧 schema v2 passed evidence，或缺少完整文件清单的 verification subject v1，都会被标记为 stale，旧文件不会被改写。已完成任务的历史 v1/v2 evidence 和 subject v1 保持可读并标记为 legacy。doctor、handoff 和 complete 发现 stale 时不会静默改写 `tasks.json`。所有 Git 路径在终端与 HANDOFF 展示前都会转义控制字符，HANDOFF 还会转义 Markdown 元字符。
 
 同一验收达到冻结的失败阈值后任务自动 blocked。人工处理后执行：
 
@@ -137,7 +147,7 @@ python3 .harness/harness.py unblock TASK_ID --note "处理了什么"
 python3 .harness/harness.py complete TASK_ID
 ```
 
-任何 Git status、branch、HEAD 或 index 读取不确定都会 fail closed。
+任何 Git status、branch、HEAD、index、tracked/ignored 文件清单或子模块状态读取不确定都会 fail closed。若任务领取时明确冻结了 `require_git_for_completion: false`，可以不使用 Git 新鲜度门禁，但 doctor、handoff 和 complete 都会显示 `not Git-bound by policy` 警告。
 
 ## 5. 跨会话交接
 
@@ -176,7 +186,8 @@ python3 .harness/harness.py status
 ```bash
 python3 -m unittest discover -s tests -v
 node --test examples/todo/test.mjs
-ruff check --no-cache template/.harness/harness.py tests/test_harness.py
+python3 -m pip install ruff==0.15.12
+ruff check --no-cache template/.harness/harness.py integrations/github/publish_check.py tests
 ```
 
 真实浏览器回归需要 Playwright 和可通过 CDP 访问的 Chromium：
@@ -187,3 +198,20 @@ python3 tests/todo_browser_acceptance.py
 ```
 
 仓库脚本默认启动无头 Chromium；需复用已启动的专用浏览器时，可设置 `HARNESS_CDP_URL=http://127.0.0.1:9344`。Playwright 仅是开发验收依赖，不是 Harness 运行时依赖。
+
+## 可选 GitHub Check Run 集成
+
+`integrations/github/` 提供一个独立于核心运行时的 GitHub REST API 适配器。复制示例 workflow 后，它会在普通 CI 中运行 doctor/check，并只在受信的 `push` 事件中使用 `checks: write` 发布完成状态：
+
+```bash
+mkdir -p .github/workflows
+cp integrations/github/minimal-harness-check.yml .github/workflows/
+```
+
+适配器只使用 Python 标准库，要求 `GITHUB_TOKEN`、`GITHUB_REPOSITORY` 和完整的 `GITHUB_SHA`。它拒绝跨主机 HTTP 重定向，避免转发 Authorization。GitHub 官方说明创建 Check Run 需要具有 Checks 写权限的 GitHub App token；GitHub Actions 的 `github.token` 由 Actions GitHub App 提供。参见 [Check Runs REST API](https://docs.github.com/en/rest/checks/runs) 和 [GitHub Actions fork 权限边界](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#changing-the-permissions-in-a-forked-repository)。
+
+## 安全与许可证
+
+Harness 是完成门禁，不是安全沙箱。运行不可信命令时仍需使用容器、虚拟机或受限账户。漏洞报告方式和明确的安全边界见 [SECURITY.md](SECURITY.md)，贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+本项目采用 [MIT License](LICENSE)。

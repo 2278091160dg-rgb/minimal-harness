@@ -768,9 +768,11 @@ class HarnessCliTest(unittest.TestCase):
             self.assertEqual("ready", first_line.strip())
             self.assertIsNone(process.poll(), "start process should still be running when output is streamed")
         finally:
-            if process.poll() is None:
+            try:
+                process.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
                 process.terminate()
-            process.communicate(timeout=3)
+                process.communicate(timeout=3)
 
     @unittest.skipIf(os.name == "nt", "POSIX signal behavior")
     def test_run_start_handles_sigint_without_traceback(self):
@@ -845,11 +847,546 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(0, evidence["exit_code"])
         self.assertEqual("command", evidence["method"])
         self.assertEqual("passed", evidence["result"])
-        self.assertEqual(2, evidence["schema_version"])
+        self.assertEqual(3, evidence["schema_version"])
+        self.assertIn("verification_subject", evidence)
+        self.assertEqual(2, evidence["verification_subject"]["version"])
+        self.assertNotIn(str(self.workspace), json.dumps(evidence["verification_subject"]))
         self.assertEqual("file", evidence["log"]["type"])
         log_path = self.workspace / evidence["log"]["path"]
         self.assertIn("verified", log_path.read_text(encoding="utf-8"))
         self.assertEqual(evidence["log"]["sha256"], hashlib.sha256(log_path.read_bytes()).hexdigest())
+
+    def test_complete_rejects_code_changed_after_pass(self):
+        self.write_json("config.json", v2_config())
+        source = self.workspace / "src" / "feature.py"
+        source.parent.mkdir()
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        source.write_text("VALUE = 2\n", encoding="utf-8")
+
+        before = self.read_tasks()
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("src/feature.py", result.stderr)
+        self.assertEqual(before, self.read_tasks())
+
+    def test_generated_harness_state_does_not_stale_evidence(self):
+        self.write_json("config.json", v2_config())
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        (self.harness_dir / "logs").mkdir()
+        (self.harness_dir / "logs" / "generated.log").write_text("generated\n", encoding="utf-8")
+        (self.harness_dir / "migrations").mkdir()
+        (self.harness_dir / "migrations" / "generated.json").write_text("{}\n", encoding="utf-8")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_doctor_and_handoff_report_stale_evidence_without_mutating_state(self):
+        self.write_json("config.json", v2_config())
+        source = self.workspace / "src" / "feature.py"
+        source.parent.mkdir()
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        source.write_text("VALUE = 2\n", encoding="utf-8")
+        before = self.read_tasks()
+
+        doctor = self.run_cli("doctor")
+        handoff_result = self.run_cli("handoff")
+
+        self.assertEqual(1, doctor.returncode)
+        self.assertIn("stale evidence", doctor.stderr)
+        self.assertEqual(0, handoff_result.returncode, handoff_result.stderr)
+        handoff = (self.harness_dir / "HANDOFF.md").read_text(encoding="utf-8")
+        self.assertIn("stale evidence", handoff)
+        self.assertNotIn("Evidence summary: command exited with code 0", handoff)
+        self.assertEqual(before, self.read_tasks())
+
+    def test_active_v2_passed_evidence_requires_reverification(self):
+        self.write_json("config.json", v2_config())
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        tasks = self.read_tasks()
+        check = tasks["tasks"][0]["acceptance"][0]
+        evidence_path = self.workspace / check["latest_evidence"]
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence["schema_version"] = 2
+        evidence.pop("verification_subject")
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+        check["latest_evidence_sha256"] = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+        self.write_json("tasks.json", tasks)
+
+        doctor = self.run_cli("doctor")
+        completed = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, doctor.returncode)
+        self.assertIn("schema v2 has no verification subject", doctor.stderr)
+        self.assertEqual(1, completed.returncode)
+        self.assertIn("re-run verification", completed.stderr)
+
+    def test_active_verification_subject_v1_requires_reverification(self):
+        self.write_json("config.json", v2_config())
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        tasks = self.read_tasks()
+        check = tasks["tasks"][0]["acceptance"][0]
+        evidence_path = self.workspace / check["latest_evidence"]
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence["verification_subject"]["version"] = 1
+        evidence["verification_subject"].pop("tracked_fingerprints")
+        evidence["verification_subject"].pop("ignored_fingerprints")
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+        check["latest_evidence_sha256"] = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+        self.write_json("tasks.json", tasks)
+
+        doctor = self.run_cli("doctor")
+        completed = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, doctor.returncode)
+        self.assertIn("verification subject v1", doctor.stderr)
+        self.assertIn("re-run verification", doctor.stderr)
+        self.assertEqual(1, completed.returncode)
+        self.assertIn("verification subject v1", completed.stderr)
+
+    def test_completed_v2_evidence_remains_readable_as_legacy(self):
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        self.assertEqual(0, self.run_cli("complete", "task-1").returncode)
+        tasks = self.read_tasks()
+        check = tasks["tasks"][0]["acceptance"][0]
+        evidence_path = self.workspace / check["latest_evidence"]
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence["schema_version"] = 2
+        evidence.pop("verification_subject")
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+        check["latest_evidence_sha256"] = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+        self.write_json("tasks.json", tasks)
+
+        result = self.run_cli("doctor")
+        handoff_result = self.run_cli("handoff")
+        handoff = (self.harness_dir / "HANDOFF.md").read_text(encoding="utf-8")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("legacy schema v2 evidence", result.stdout)
+        self.assertEqual(0, handoff_result.returncode, handoff_result.stderr)
+        self.assertIn("legacy evidence", handoff)
+
+    def test_completed_verification_subject_v1_remains_readable_as_legacy(self):
+        self.write_json("config.json", v2_config())
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        self.assertEqual(0, self.run_cli("complete", "task-1").returncode)
+        tasks = self.read_tasks()
+        check = tasks["tasks"][0]["acceptance"][0]
+        evidence_path = self.workspace / check["latest_evidence"]
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence["verification_subject"]["version"] = 1
+        evidence["verification_subject"].pop("tracked_fingerprints")
+        evidence["verification_subject"].pop("ignored_fingerprints")
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+        check["latest_evidence_sha256"] = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+        self.write_json("tasks.json", tasks)
+
+        doctor = self.run_cli("doctor")
+        handoff_result = self.run_cli("handoff")
+        handoff = (self.harness_dir / "HANDOFF.md").read_text(encoding="utf-8")
+
+        self.assertEqual(0, doctor.returncode, doctor.stderr)
+        self.assertIn("legacy verification subject v1", doctor.stdout)
+        self.assertEqual(0, handoff_result.returncode, handoff_result.stderr)
+        self.assertIn("legacy evidence", handoff)
+
+    def test_completed_schema_v1_evidence_reports_its_actual_legacy_version(self):
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        self.assertEqual(0, self.run_cli("complete", "task-1").returncode)
+        tasks = self.read_tasks()
+        task = tasks["tasks"][0]
+        check = task["acceptance"][0]
+        evidence_path = self.workspace / check["latest_evidence"]
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence["schema_version"] = 1
+        evidence.pop("verification_subject")
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+        check["latest_evidence_sha256"] = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+        task["legacy_evidence"] = True
+        self.write_json("tasks.json", tasks)
+
+        result = self.run_cli("doctor")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("legacy schema v1 evidence", result.stdout)
+        self.assertNotIn("legacy schema v2 evidence", result.stdout)
+
+    def test_git_opt_out_labels_evidence_as_not_git_bound(self):
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+
+        doctor = self.run_cli("doctor")
+        completed = self.run_cli("complete", "task-1")
+
+        self.assertEqual(0, doctor.returncode, doctor.stderr)
+        self.assertIn("not Git-bound by policy", doctor.stdout)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("not Git-bound by policy", completed.stdout)
+
+    def test_config_change_after_pass_stales_evidence(self):
+        self.write_json("config.json", v2_config())
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        config = v2_config()
+        config["project_name"] = "Changed after verification"
+        self.write_json("config.json", config)
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn(".harness/config.json", result.stderr)
+
+    def test_harness_runtime_change_after_pass_stales_evidence(self):
+        self.write_json("config.json", v2_config())
+        runtime = self.harness_dir / "harness.py"
+        runtime.write_text("VERSION = 1\n", encoding="utf-8")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        runtime.write_text("VERSION = 2\n", encoding="utf-8")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn(".harness/harness.py", result.stderr)
+
+    def test_malformed_verification_subject_is_integrity_error_for_doctor(self):
+        self.write_json("config.json", v2_config())
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        tasks = self.read_tasks()
+        check = tasks["tasks"][0]["acceptance"][0]
+        evidence_path = self.workspace / check["latest_evidence"]
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence["verification_subject"]["version"] = 99
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+        check["latest_evidence_sha256"] = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+        self.write_json("tasks.json", tasks)
+
+        doctor = self.run_cli("doctor")
+        completed = self.run_cli("complete", "task-1")
+
+        self.assertEqual(2, doctor.returncode)
+        self.assertIn("verification_subject", doctor.stderr)
+        self.assertEqual(2, completed.returncode)
+        self.assertIn("valid evidence", completed.stderr)
+
+    def test_ignored_file_created_after_pass_stales_evidence(self):
+        self.write_json("config.json", v2_config())
+        (self.workspace / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        (self.workspace / "ignored.py").write_text("SECRET = 1\n", encoding="utf-8")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("ignored.py", result.stderr)
+
+    def test_ignored_file_edit_after_pass_stales_evidence(self):
+        self.write_json("config.json", v2_config())
+        (self.workspace / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
+        ignored = self.workspace / "ignored.py"
+        ignored.write_text("SECRET = 1\n", encoding="utf-8")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        ignored.write_text("SECRET = 2\n", encoding="utf-8")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("ignored.py", result.stderr)
+
+    def test_assume_unchanged_file_edit_after_pass_stales_evidence(self):
+        self.write_json("config.json", v2_config())
+        source = self.workspace / "src" / "feature.py"
+        source.parent.mkdir()
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        subprocess.run(
+            ["git", "update-index", "--assume-unchanged", "src/feature.py"],
+            cwd=self.workspace,
+            check=True,
+        )
+        source.write_text("VALUE = 2\n", encoding="utf-8")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("src/feature.py", result.stderr)
+
+    def test_skip_worktree_file_edit_after_pass_stales_evidence(self):
+        self.write_json("config.json", v2_config())
+        source = self.workspace / "src" / "feature.py"
+        source.parent.mkdir()
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        subprocess.run(
+            ["git", "update-index", "--skip-worktree", "src/feature.py"],
+            cwd=self.workspace,
+            check=True,
+        )
+        source.write_text("VALUE = 2\n", encoding="utf-8")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("src/feature.py", result.stderr)
+
+    def test_empty_commit_after_pass_stales_evidence(self):
+        self.write_json("config.json", v2_config())
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        subprocess.run(
+            ["git", "commit", "--allow-empty", "-m", "empty after verification"],
+            cwd=self.workspace,
+            check=True,
+            capture_output=True,
+        )
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("HEAD changed", result.stderr)
+
+    def test_net_zero_commit_history_after_pass_stales_evidence(self):
+        self.write_json("config.json", v2_config())
+        source = self.workspace / "feature.py"
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        source.write_text("VALUE = 2\n", encoding="utf-8")
+        subprocess.run(["git", "add", "feature.py"], cwd=self.workspace, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "temporary change"],
+            cwd=self.workspace,
+            check=True,
+            capture_output=True,
+        )
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+        subprocess.run(["git", "add", "feature.py"], cwd=self.workspace, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "restore original tree"],
+            cwd=self.workspace,
+            check=True,
+            capture_output=True,
+        )
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("HEAD changed", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "backslash is a path separator on Windows")
+    def test_literal_backslash_filename_changed_after_pass_stales_evidence(self):
+        self.write_json("config.json", v2_config())
+        self.initialize_git_repository()
+        source = self.workspace / "pre\\dirty.py"
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        source.write_text("VALUE = 2\n", encoding="utf-8")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("pre\\dirty.py", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "control characters are not portable filenames on Windows")
+    def test_handoff_escapes_control_and_markdown_characters_in_git_paths(self):
+        self.write_json("config.json", v2_config())
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        malicious = self.workspace / "evil*_[name]\n  - Evidence summary: FORGED.py"
+        malicious.write_text("payload\n", encoding="utf-8")
+
+        result = self.run_cli("handoff")
+        handoff = (self.harness_dir / "HANDOFF.md").read_text(encoding="utf-8")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotIn("\n  - Evidence summary: FORGED.py", handoff)
+        self.assertIn(r"evil\*\_\[name\]\\n  - Evidence summary: FORGED.py", handoff)
+
+    @unittest.skipIf(os.name == "nt", "control characters are not portable filenames on Windows")
+    def test_complete_escapes_terminal_control_characters_in_git_paths(self):
+        self.write_json("config.json", v2_config())
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        malicious = self.workspace / "evil\x1b[31m.py"
+        malicious.write_text("payload\n", encoding="utf-8")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertNotIn("\x1b", result.stderr)
+        self.assertIn(r"evil\x1b[31m.py", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "POSIX permissions and control filenames are required")
+    def test_git_fingerprint_error_escapes_path_and_os_error_controls(self):
+        self.write_json("config.json", v2_config())
+        self.initialize_git_repository()
+        malicious = self.workspace / "evil\nFORGED-DIAGNOSTIC\x1b[31m.py"
+        malicious.write_text("payload\n", encoding="utf-8")
+        malicious.chmod(0)
+
+        result = self.run_cli("next")
+
+        self.assertEqual(2, result.returncode)
+        self.assertNotIn("\nFORGED-DIAGNOSTIC", result.stderr)
+        self.assertNotIn("\x1b", result.stderr)
+        self.assertIn(r"evil\nFORGED-DIAGNOSTIC\x1b[31m.py", result.stderr)
+
+    def test_handoff_escapes_invalid_completed_evidence_reference(self):
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        self.assertEqual(0, self.run_cli("complete", "task-1").returncode)
+        tasks = self.read_tasks()
+        tasks["tasks"][0]["acceptance"][0]["latest_evidence"] = (
+            ".harness/evidence/task-1/evil\n- Evidence summary: FORGED *[link]*"
+        )
+        self.write_json("tasks.json", tasks)
+
+        result = self.run_cli("handoff")
+        handoff = (self.harness_dir / "HANDOFF.md").read_text(encoding="utf-8")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotIn("\n- Evidence summary: FORGED", handoff)
+        self.assertIn(
+            r"evil\\n- Evidence summary: FORGED \*\[link\]\*",
+            handoff,
+        )
+
+    def test_complete_rejects_staged_change_after_pass(self):
+        self.write_json("config.json", v2_config())
+        source = self.workspace / "src" / "feature.py"
+        source.parent.mkdir()
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        source.write_text("VALUE = 2\n", encoding="utf-8")
+        subprocess.run(["git", "add", "src/feature.py"], cwd=self.workspace, check=True)
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("src/feature.py", result.stderr)
+
+    def test_complete_rejects_committed_change_after_pass_when_git_is_required(self):
+        self.write_json("config.json", v2_config())
+        source = self.workspace / "src" / "feature.py"
+        source.parent.mkdir()
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        source.write_text("VALUE = 2\n", encoding="utf-8")
+        subprocess.run(["git", "add", "src/feature.py"], cwd=self.workspace, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "change after pass"],
+            cwd=self.workspace,
+            check=True,
+            capture_output=True,
+        )
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("src/feature.py", result.stderr)
+
+    def test_complete_rejects_renamed_file_after_pass(self):
+        self.write_json("config.json", v2_config())
+        source = self.workspace / "src" / "before.py"
+        source.parent.mkdir()
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        subprocess.run(
+            ["git", "mv", "src/before.py", "src/after.py"], cwd=self.workspace, check=True
+        )
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertTrue(
+            "src/before.py" in result.stderr or "src/after.py" in result.stderr,
+            result.stderr,
+        )
+
+    def test_complete_rejects_deleted_file_after_pass(self):
+        self.write_json("config.json", v2_config())
+        source = self.workspace / "src" / "feature.py"
+        source.parent.mkdir()
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        source.unlink()
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("src/feature.py", result.stderr)
+
+    def test_complete_rejects_second_edit_to_preexisting_dirty_file_after_pass(self):
+        self.write_json("config.json", v2_config())
+        self.initialize_git_repository()
+        source = self.workspace / "src" / "feature.py"
+        source.parent.mkdir()
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        source.write_text("VALUE = 2\n", encoding="utf-8")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("src/feature.py", result.stderr)
 
     def test_third_consecutive_command_failure_blocks_task_and_preserves_evidence(self):
         tasks = base_tasks(command=[sys.executable, "-c", "print('broken'); raise SystemExit(7)"])
@@ -964,7 +1501,7 @@ class HarnessCliTest(unittest.TestCase):
 
         result = self.run_cli("complete", "task-1")
 
-        self.assertEqual(1, result.returncode)
+        self.assertEqual(2, result.returncode)
         self.assertIn("artifact digest", result.stderr)
 
     def test_complete_rejects_artifact_replaced_by_same_content_symlink(self):
@@ -986,7 +1523,7 @@ class HarnessCliTest(unittest.TestCase):
 
         result = self.run_cli("complete", "task-1")
 
-        self.assertEqual(1, result.returncode)
+        self.assertEqual(2, result.returncode)
         self.assertIn("non-symlink", result.stderr)
 
     def test_complete_rejects_tampered_command_log(self):
@@ -998,7 +1535,7 @@ class HarnessCliTest(unittest.TestCase):
 
         result = self.run_cli("complete", "task-1")
 
-        self.assertEqual(1, result.returncode)
+        self.assertEqual(2, result.returncode)
         self.assertIn("log digest", result.stderr)
 
     def test_record_rejects_symlinked_evidence_root_before_external_write(self):
@@ -1085,7 +1622,7 @@ class HarnessCliTest(unittest.TestCase):
 
         result = self.run_cli("complete", "task-1")
 
-        self.assertEqual(1, result.returncode)
+        self.assertEqual(2, result.returncode)
         self.assertIn("valid evidence", result.stderr)
         self.assertEqual("in_progress", self.read_tasks()["tasks"][0]["status"])
 
@@ -1107,7 +1644,7 @@ class HarnessCliTest(unittest.TestCase):
 
         self.assertEqual(2, doctor.returncode)
         self.assertIn("evidence file does not exist", doctor.stderr)
-        self.assertEqual(1, completed.returncode)
+        self.assertEqual(2, completed.returncode)
         self.assertIn("valid evidence", completed.stderr)
 
     def test_tampered_evidence_fails_integrity_check(self):
@@ -1128,7 +1665,7 @@ class HarnessCliTest(unittest.TestCase):
 
         result = self.run_cli("complete", "task-1")
 
-        self.assertEqual(1, result.returncode)
+        self.assertEqual(2, result.returncode)
         self.assertIn("digest does not match", result.stderr)
 
     def test_unblock_resets_counter_but_preserves_failure_evidence(self):
@@ -1473,6 +2010,59 @@ class HarnessCliTest(unittest.TestCase):
 
         self.assertEqual(2, result.returncode)
         self.assertIn("non-regular dirty path", result.stderr)
+
+    def test_complete_rejects_submodule_dirtied_after_pass(self):
+        source_dir = (
+            Path(self.temp_dir.name).parent / f"harness-submodule-post-pass-{os.getpid()}"
+        )
+        source_dir.mkdir()
+        self.addCleanup(lambda: shutil.rmtree(source_dir, ignore_errors=True))
+        subprocess.run(["git", "init"], cwd=source_dir, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "harness@example.test"],
+            cwd=source_dir,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Harness Test"], cwd=source_dir, check=True
+        )
+        (source_dir / "nested.txt").write_text("initial", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=source_dir, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "initial"], cwd=source_dir, check=True, capture_output=True
+        )
+        self.initialize_git_repository()
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                str(source_dir),
+                "vendor/submodule",
+            ],
+            cwd=self.workspace,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-am", "add submodule"],
+            cwd=self.workspace,
+            check=True,
+            capture_output=True,
+        )
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        (self.workspace / "vendor" / "submodule" / "nested.txt").write_text(
+            "dirty", encoding="utf-8"
+        )
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("cannot fingerprint non-regular dirty path", result.stderr)
+        self.assertIn("vendor/submodule", result.stderr)
 
     def test_allowed_paths_single_star_does_not_cross_directory_separator(self):
         self.write_json("tasks.json", base_tasks(check_type="manual"))
