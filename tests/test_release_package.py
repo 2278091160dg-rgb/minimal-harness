@@ -77,7 +77,9 @@ class ReleasePackageTest(unittest.TestCase):
             )
             self.assertEqual(
                 package.read(".harness/harness.py"),
-                b"print('committed')\n",
+                self.run_git(
+                    "show", "HEAD:template/.harness/harness.py"
+                ).stdout,
             )
 
         expected_digest = hashlib.sha256(archive.read_bytes()).hexdigest()
