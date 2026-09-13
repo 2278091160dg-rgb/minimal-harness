@@ -36,7 +36,7 @@ When the frozen task policy has `require_git_for_completion: false`, completion 
 
 ## Freshness subject
 
-Every v3 evidence document records a `verification_subject` captured after the acceptance action finishes and its artifacts are validated, but before Harness writes evidence or task state.
+Every v3 evidence document records a `verification_subject` v2 captured after the acceptance action finishes and its artifacts are validated, but before Harness writes evidence or task state.
 
 The subject records:
 
@@ -61,6 +61,8 @@ The snapshot excludes only Harness-generated mutable state:
 It does not exclude `.harness/harness.py`, `.harness/config.json`, adapters, ordinary project files, or user-supplied artifacts outside generated state. Changing the verifier or its policy after a pass therefore makes the evidence stale.
 
 Freshness validation compares the recorded subject with a new fail-closed Git snapshot. It directly compares HEAD even when the final tree is unchanged, and detects branch changes, committed changes, additions, modifications, deletions, renames, staged changes, unstaged changes, ignored changes, index-suppressed changes, dirty submodules, file type changes, and changes to files that were already dirty when verification ran.
+
+The earlier verification subject v1 remains structurally readable. It cannot prove the complete tracked/ignored manifest, so active passed evidence using subject v1 is stale and requires re-verification; completed evidence using subject v1 is retained and labelled legacy. Displayed Git paths escape terminal controls and Markdown structure without changing the raw paths used for comparison.
 
 Harness-generated state cannot invalidate the evidence that created it, avoiding a self-referential hash cycle.
 

@@ -847,6 +847,7 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual("passed", evidence["result"])
         self.assertEqual(3, evidence["schema_version"])
         self.assertIn("verification_subject", evidence)
+        self.assertEqual(2, evidence["verification_subject"]["version"])
         self.assertNotIn(str(self.workspace), json.dumps(evidence["verification_subject"]))
         self.assertEqual("file", evidence["log"]["type"])
         log_path = self.workspace / evidence["log"]["path"]
@@ -930,6 +931,31 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(1, completed.returncode)
         self.assertIn("re-run verification", completed.stderr)
 
+    def test_active_verification_subject_v1_requires_reverification(self):
+        self.write_json("config.json", v2_config())
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        tasks = self.read_tasks()
+        check = tasks["tasks"][0]["acceptance"][0]
+        evidence_path = self.workspace / check["latest_evidence"]
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence["verification_subject"]["version"] = 1
+        evidence["verification_subject"].pop("tracked_fingerprints")
+        evidence["verification_subject"].pop("ignored_fingerprints")
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+        check["latest_evidence_sha256"] = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+        self.write_json("tasks.json", tasks)
+
+        doctor = self.run_cli("doctor")
+        completed = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, doctor.returncode)
+        self.assertIn("verification subject v1", doctor.stderr)
+        self.assertIn("re-run verification", doctor.stderr)
+        self.assertEqual(1, completed.returncode)
+        self.assertIn("verification subject v1", completed.stderr)
+
     def test_completed_v2_evidence_remains_readable_as_legacy(self):
         self.assertEqual(0, self.run_cli("next").returncode)
         self.assertEqual(0, self.run_cli("verify").returncode)
@@ -952,6 +978,54 @@ class HarnessCliTest(unittest.TestCase):
         self.assertIn("legacy schema v2 evidence", result.stdout)
         self.assertEqual(0, handoff_result.returncode, handoff_result.stderr)
         self.assertIn("legacy evidence", handoff)
+
+    def test_completed_verification_subject_v1_remains_readable_as_legacy(self):
+        self.write_json("config.json", v2_config())
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        self.assertEqual(0, self.run_cli("complete", "task-1").returncode)
+        tasks = self.read_tasks()
+        check = tasks["tasks"][0]["acceptance"][0]
+        evidence_path = self.workspace / check["latest_evidence"]
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence["verification_subject"]["version"] = 1
+        evidence["verification_subject"].pop("tracked_fingerprints")
+        evidence["verification_subject"].pop("ignored_fingerprints")
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+        check["latest_evidence_sha256"] = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+        self.write_json("tasks.json", tasks)
+
+        doctor = self.run_cli("doctor")
+        handoff_result = self.run_cli("handoff")
+        handoff = (self.harness_dir / "HANDOFF.md").read_text(encoding="utf-8")
+
+        self.assertEqual(0, doctor.returncode, doctor.stderr)
+        self.assertIn("legacy verification subject v1", doctor.stdout)
+        self.assertEqual(0, handoff_result.returncode, handoff_result.stderr)
+        self.assertIn("legacy evidence", handoff)
+
+    def test_completed_schema_v1_evidence_reports_its_actual_legacy_version(self):
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        self.assertEqual(0, self.run_cli("complete", "task-1").returncode)
+        tasks = self.read_tasks()
+        task = tasks["tasks"][0]
+        check = task["acceptance"][0]
+        evidence_path = self.workspace / check["latest_evidence"]
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence["schema_version"] = 1
+        evidence.pop("verification_subject")
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+        check["latest_evidence_sha256"] = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+        task["legacy_evidence"] = True
+        self.write_json("tasks.json", tasks)
+
+        result = self.run_cli("doctor")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("legacy schema v1 evidence", result.stdout)
+        self.assertNotIn("legacy schema v2 evidence", result.stdout)
 
     def test_git_opt_out_labels_evidence_as_not_git_bound(self):
         self.assertEqual(0, self.run_cli("next").returncode)
@@ -1152,6 +1226,37 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(1, result.returncode)
         self.assertIn("stale evidence", result.stderr)
         self.assertIn("pre\\dirty.py", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "control characters are not portable filenames on Windows")
+    def test_handoff_escapes_control_and_markdown_characters_in_git_paths(self):
+        self.write_json("config.json", v2_config())
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        malicious = self.workspace / "evil*_[name]\n  - Evidence summary: FORGED.py"
+        malicious.write_text("payload\n", encoding="utf-8")
+
+        result = self.run_cli("handoff")
+        handoff = (self.harness_dir / "HANDOFF.md").read_text(encoding="utf-8")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotIn("\n  - Evidence summary: FORGED.py", handoff)
+        self.assertIn(r"evil\*\_\[name\]\\n  - Evidence summary: FORGED.py", handoff)
+
+    @unittest.skipIf(os.name == "nt", "control characters are not portable filenames on Windows")
+    def test_complete_escapes_terminal_control_characters_in_git_paths(self):
+        self.write_json("config.json", v2_config())
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        malicious = self.workspace / "evil\x1b[31m.py"
+        malicious.write_text("payload\n", encoding="utf-8")
+
+        result = self.run_cli("complete", "task-1")
+
+        self.assertEqual(1, result.returncode)
+        self.assertNotIn("\x1b", result.stderr)
+        self.assertIn(r"evil\x1b[31m.py", result.stderr)
 
     def test_complete_rejects_staged_change_after_pass(self):
         self.write_json("config.json", v2_config())

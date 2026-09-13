@@ -127,11 +127,11 @@ python3 .harness/harness.py record TASK_ID CHECK_ID \
 
 每次结果会新增不可覆盖的 schema v3 evidence JSON。配置、任务状态、policy 和任务 Git baseline 仍保持 schema v2；evidence 单独升级，避免无关状态迁移。最新 evidence JSON、命令日志和每个附件都记录大小及 SHA-256；doctor、handoff 和 complete 会验证路径、文件类型、摘要及任务/验收字段。
 
-v3 evidence 还会保存验收完成时的 Git verification subject，包括 branch、HEAD、unborn 状态、工作树与 index 指纹、完整 tracked/ignored 文件清单指纹，以及嵌套 workspace 位置。全量清单会捕获 `assume-unchanged`、`skip-worktree` 和被 `.gitignore` 隐藏的修改；子模块状态也按不忽略方式检查。`complete` 会重新捕获当前 subject，并直接比较 HEAD；即使文件树恢复原样、后续修改仍位于 `allowed_paths`，只要验证后的 Git 历史或相关内容发生变化，就必须重新执行 `verify` 或 `record`。
+v3 evidence 还会保存验收完成时的 Git verification subject v2，包括 branch、HEAD、unborn 状态、工作树与 index 指纹、完整 tracked/ignored 文件清单指纹，以及嵌套 workspace 位置。全量清单会捕获 `assume-unchanged`、`skip-worktree` 和被 `.gitignore` 隐藏的修改；子模块状态也按不忽略方式检查。`complete` 会重新捕获当前 subject，并直接比较 HEAD；即使文件树恢复原样、后续修改仍位于 `allowed_paths`，只要验证后的 Git 历史或相关内容发生变化，就必须重新执行 `verify` 或 `record`。
 
 为了避免 evidence 自己使自己过期，新鲜度比较只排除 Harness 生成的可变状态：`tasks.json`、`evidence/**`、`logs/**`、`HANDOFF.md` 和 `migrations/**`。`harness.py`、`config.json`、适配器和普通项目文件不会被排除。
 
-活动任务引用的旧 schema v2 passed evidence 会被标记为 stale，旧文件不会被改写。已完成任务的历史 v1/v2 evidence 保持可读。doctor、handoff 和 complete 发现 stale 时不会静默改写 `tasks.json`。
+活动任务引用的旧 schema v2 passed evidence，或缺少完整文件清单的 verification subject v1，都会被标记为 stale，旧文件不会被改写。已完成任务的历史 v1/v2 evidence 和 subject v1 保持可读并标记为 legacy。doctor、handoff 和 complete 发现 stale 时不会静默改写 `tasks.json`。所有 Git 路径在终端与 HANDOFF 展示前都会转义控制字符，HANDOFF 还会转义 Markdown 元字符。
 
 同一验收达到冻结的失败阈值后任务自动 blocked。人工处理后执行：
 
