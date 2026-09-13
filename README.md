@@ -186,7 +186,8 @@ python3 .harness/harness.py status
 ```bash
 python3 -m unittest discover -s tests -v
 node --test examples/todo/test.mjs
-ruff check --no-cache template/.harness/harness.py tests/test_harness.py
+python3 -m pip install ruff==0.15.12
+ruff check --no-cache template/.harness/harness.py integrations/github/publish_check.py tests
 ```
 
 真实浏览器回归需要 Playwright 和可通过 CDP 访问的 Chromium：

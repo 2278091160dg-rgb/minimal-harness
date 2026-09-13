@@ -11,6 +11,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = PROJECT_ROOT / "integrations" / "github" / "publish_check.py"
+CI_WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "ci.yml"
 
 
 class RecordingHandler(BaseHTTPRequestHandler):
@@ -186,6 +187,11 @@ class GitHubIntegrationTest(unittest.TestCase):
         self.assertEqual(1, result.returncode)
         self.assertIn("HTTP 302", result.stderr)
         self.assertEqual([], self.server.get_requests)
+
+    def test_ci_pins_the_verified_ruff_version(self):
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("python -m pip install ruff==0.15.12", workflow)
 
 
 if __name__ == "__main__":

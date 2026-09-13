@@ -24,6 +24,7 @@ Optional integrations belong outside `template/.harness/` when they require a pl
 ```bash
 python3 -m unittest discover -s tests -v
 node --test examples/todo/test.mjs
+python3 -m pip install ruff==0.15.12
 ruff check --no-cache template/.harness/harness.py integrations/github/publish_check.py tests
 python3 template/.harness/harness.py --workspace template doctor
 python3 template/.harness/harness.py --workspace examples/todo doctor
