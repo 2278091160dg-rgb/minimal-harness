@@ -198,6 +198,17 @@ python3 tests/todo_browser_acceptance.py
 
 仓库脚本默认启动无头 Chromium；需复用已启动的专用浏览器时，可设置 `HARNESS_CDP_URL=http://127.0.0.1:9344`。Playwright 仅是开发验收依赖，不是 Harness 运行时依赖。
 
+## 可选 GitHub Check Run 集成
+
+`integrations/github/` 提供一个独立于核心运行时的 GitHub REST API 适配器。复制示例 workflow 后，它会在普通 CI 中运行 doctor/check，并只在受信的 `push` 事件中使用 `checks: write` 发布完成状态：
+
+```bash
+mkdir -p .github/workflows
+cp integrations/github/minimal-harness-check.yml .github/workflows/
+```
+
+适配器只使用 Python 标准库，要求 `GITHUB_TOKEN`、`GITHUB_REPOSITORY` 和完整的 `GITHUB_SHA`。它拒绝跨主机 HTTP 重定向，避免转发 Authorization。GitHub 官方说明创建 Check Run 需要具有 Checks 写权限的 GitHub App token；GitHub Actions 的 `github.token` 由 Actions GitHub App 提供。参见 [Check Runs REST API](https://docs.github.com/en/rest/checks/runs) 和 [GitHub Actions fork 权限边界](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#changing-the-permissions-in-a-forked-repository)。
+
 ## 安全与许可证
 
 Harness 是完成门禁，不是安全沙箱。运行不可信命令时仍需使用容器、虚拟机或受限账户。漏洞报告方式和明确的安全边界见 [SECURITY.md](SECURITY.md)，贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
