@@ -84,6 +84,26 @@ Claude Code 读取生成的 `CLAUDE.md` 区块，参见官方
 [Claude Code memory 文档](https://code.claude.com/docs/en/memory)。请在初始化后的
 项目根目录打开任一 Agent，使其使用同一工作树和 `.harness/` 状态。
 
+### 用常用入口启动 Claude Code
+
+完成项目初始化与配置后，在项目根目录启动标准 Claude Code CLI，再粘贴后文的
+开始／继续或接手提示词：
+
+```bash
+cd "/absolute/path/to/project"
+claude
+```
+
+官方订阅用户也使用这一标准入口；安装和登录参见
+[Claude Code 官方快速入门](https://code.claude.com/docs/en/quickstart)。
+Harness 不选择模型供应商、不管理登录凭据，也不负责启动模型。
+
+如果你的机器通过 `claude-sub` 等自定义 shell 函数选择独立的本地配置，启动会话时
+使用该函数即可。这是本机约定，不是 Harness 命令，也不是其他用户的安装前提。
+初始化仍用 `--agent claude`，指令文件仍是 `CLAUDE.md`，所有 Harness 命令保持一致。
+不要把本机别名、账户配置或凭据复制到共享仓库。验证报告应注明实际使用的启动入口，
+并区分该入口的连接失败与 Harness 验收失败。
+
 ## 能力清单
 
 | 能力 | 能确认什么 |

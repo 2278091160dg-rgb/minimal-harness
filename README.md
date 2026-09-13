@@ -94,6 +94,29 @@ Claude Code reads the generated `CLAUDE.md` block; see the official
 Open either agent in the initialized project root so it operates on the same
 working tree and `.harness/` state.
 
+### Start Claude Code with your normal launcher
+
+After initializing and configuring the project, start the standard Claude Code
+CLI in its root, then paste the start/resume or takeover prompt below:
+
+```bash
+cd "/absolute/path/to/project"
+claude
+```
+
+This is the standard entry point for subscription users too; follow the
+[official Claude Code quickstart](https://code.claude.com/docs/en/quickstart)
+for installation and login. Harness does not select a provider, manage login
+credentials, or launch the model itself.
+
+If your machine uses a custom shell function such as `claude-sub` to select a
+separate local profile, use that function instead of `claude` when starting the
+session. It is a local convention, not a Harness command or an installation
+requirement. Keep `--agent claude`, `CLAUDE.md`, and every Harness command the
+same. Do not copy local aliases, account settings or credentials into the shared
+repository. Verification reports should identify the actual launcher used and
+separate its connection failures from Harness acceptance failures.
+
 ## What it can prove
 
 | Capability | What it establishes |

@@ -68,6 +68,14 @@ python3 tests/todo_browser_acceptance.py --artifact-dir "examples/todo/proof"
 
 ## Actual agent sessions: partial verification
 
+The initial Claude attempt below used the standard `claude` executable with
+this test machine's legacy forwarding profile. The operator later clarified
+that their active subscription workflow uses a local `claude-sub` shell
+function selecting a separate profile. The connection failure below therefore
+does not establish a failure of the operator's subscription connection or of
+Harness integration. Retesting must use the intended profile and retain the
+same Harness commands; a local launcher name is not a product dependency.
+
 | Check | Result | Observed outcome |
 | --- | --- | --- |
 | Codex CLI sender, version 0.144.1 | UNVERIFIED | The configured model was rejected with API 400 requiring a newer Codex version, before any task operations. No CLI upgrade or model substitution was performed. |
