@@ -2,6 +2,10 @@
 
 这是一套可复制到任意代码项目的最小 Harness。它不调用 AI，也不把“代码写完”当作“用户可用”；它把任务、单项执行、真实验证、证据门禁和跨会话交接连接成可检查的闭环。
 
+**Minimal, dependency-free, fail-closed completion proof layer for coding agents.**
+
+它是独立 CLI 验收内核，不是 Codex Skill、Agent 编排器或操作系统沙箱。Codex、Claude Code、GitHub Copilot 等编码 Agent 都可以调用同一套命令。
+
 Harness v2 只依赖 Python 3.9+ 标准库。Node.js 和 Playwright 只用于仓库自带示例及开发验收。
 
 ## 1. 安装或升级
@@ -121,7 +125,13 @@ python3 .harness/harness.py record TASK_ID CHECK_ID \
   --summary "当前 Agent 没有浏览器工具"
 ```
 
-每次结果会新增不可覆盖的 schema v2 evidence JSON。最新 evidence JSON、命令日志和每个附件都记录大小及 SHA-256；doctor、handoff 和 complete 会验证路径、文件类型、摘要及任务/验收字段。
+每次结果会新增不可覆盖的 schema v3 evidence JSON。配置、任务状态、policy 和任务 Git baseline 仍保持 schema v2；evidence 单独升级，避免无关状态迁移。最新 evidence JSON、命令日志和每个附件都记录大小及 SHA-256；doctor、handoff 和 complete 会验证路径、文件类型、摘要及任务/验收字段。
+
+v3 evidence 还会保存验收完成时的 Git verification subject，包括 branch、HEAD、unborn 状态、工作树指纹、index blob/stage 指纹和嵌套 workspace 位置。`complete` 会重新捕获当前 subject；即使后续修改仍位于 `allowed_paths`，只要发生在 passed 之后，也必须重新执行 `verify` 或 `record`。
+
+为了避免 evidence 自己使自己过期，新鲜度比较只排除 Harness 生成的可变状态：`tasks.json`、`evidence/**`、`logs/**`、`HANDOFF.md` 和 `migrations/**`。`harness.py`、`config.json`、适配器和普通项目文件不会被排除。
+
+活动任务引用的旧 schema v2 passed evidence 会被标记为 stale，旧文件不会被改写。已完成任务的历史 v1/v2 evidence 保持可读。doctor、handoff 和 complete 发现 stale 时不会静默改写 `tasks.json`。
 
 同一验收达到冻结的失败阈值后任务自动 blocked。人工处理后执行：
 
@@ -137,7 +147,7 @@ python3 .harness/harness.py unblock TASK_ID --note "处理了什么"
 python3 .harness/harness.py complete TASK_ID
 ```
 
-任何 Git status、branch、HEAD 或 index 读取不确定都会 fail closed。
+任何 Git status、branch、HEAD 或 index 读取不确定都会 fail closed。若任务领取时明确冻结了 `require_git_for_completion: false`，可以不使用 Git 新鲜度门禁，但 doctor、handoff 和 complete 都会显示 `not Git-bound by policy` 警告。
 
 ## 5. 跨会话交接
 
@@ -187,3 +197,9 @@ python3 tests/todo_browser_acceptance.py
 ```
 
 仓库脚本默认启动无头 Chromium；需复用已启动的专用浏览器时，可设置 `HARNESS_CDP_URL=http://127.0.0.1:9344`。Playwright 仅是开发验收依赖，不是 Harness 运行时依赖。
+
+## 安全与许可证
+
+Harness 是完成门禁，不是安全沙箱。运行不可信命令时仍需使用容器、虚拟机或受限账户。漏洞报告方式和明确的安全边界见 [SECURITY.md](SECURITY.md)，贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+本项目采用 [MIT License](LICENSE)。
