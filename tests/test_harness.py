@@ -768,9 +768,11 @@ class HarnessCliTest(unittest.TestCase):
             self.assertEqual("ready", first_line.strip())
             self.assertIsNone(process.poll(), "start process should still be running when output is streamed")
         finally:
-            if process.poll() is None:
+            try:
+                process.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
                 process.terminate()
-            process.communicate(timeout=3)
+                process.communicate(timeout=3)
 
     @unittest.skipIf(os.name == "nt", "POSIX signal behavior")
     def test_run_start_handles_sigint_without_traceback(self):
