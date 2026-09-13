@@ -39,6 +39,61 @@ The archive expands directly to `.harness/`. Edit `.harness/config.json`
 and `.harness/tasks.json` for your project, then begin the workflow below.
 The release also includes `SHA256SUMS.txt` for download verification.
 
+The release ZIP is the portable runtime package. It does **not** include the
+source-checkout initializer described next.
+
+## Initialize another project from a source checkout
+
+From a clone of this repository, initialize an existing project directory:
+
+```bash
+python3 scripts/init_harness.py --workspace "/absolute/path/to/project"
+```
+
+`--workspace` is required and must name an existing directory. The default
+installs instruction blocks for both supported agents. Select one explicitly
+when needed:
+
+```bash
+python3 scripts/init_harness.py --workspace "/absolute/path/to/project" --agent codex
+python3 scripts/init_harness.py --workspace "/absolute/path/to/project" --agent claude
+python3 scripts/init_harness.py --workspace "/absolute/path/to/project" --agent both
+```
+
+A fresh installation copies the canonical `.harness/` template and adds a
+managed block to the selected root instruction files: `AGENTS.md` for Codex and
+`CLAUDE.md` for Claude Code. The initializer does not run project commands,
+select a task, or generate project-specific configuration. Before running
+`next`, edit the installed `.harness/config.json` and `.harness/tasks.json` with
+the real project commands, allowed paths, tasks, and acceptance checks.
+
+Preview the exact file actions without writing anything:
+
+```bash
+python3 scripts/init_harness.py --workspace "/absolute/path/to/project" --agent both --dry-run
+```
+
+Re-running the same command is safe. For an existing complete schema-v2
+installation, runtime files and task state are preserved byte for byte; only
+the selected managed instruction blocks can be added or updated. An identical
+run reports a no-op and succeeds. If a task is `in_progress` or `blocked`, an
+invocation that would change files refuses to write; a blocked dry-run also
+returns exit code `1`. Complete the active task before changing the managed
+blocks.
+
+The initializer fails closed on incomplete installations, v1 or malformed
+config/task state, malformed managed markers, symlinked destinations or path
+ancestors, and unexpected destination file types. It performs no automatic
+migration or repair. Use the explicit [v1 migration](#migrating-from-v1)
+workflow for an existing runtime instead.
+
+Codex reads the generated `AGENTS.md` block; see the official
+[Codex AGENTS.md documentation](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
+Claude Code reads the generated `CLAUDE.md` block; see the official
+[Claude Code memory documentation](https://code.claude.com/docs/en/memory).
+Open either agent in the initialized project root so it operates on the same
+working tree and `.harness/` state.
+
 ## What it can prove
 
 | Capability | What it establishes |
@@ -223,12 +278,54 @@ summary. The generated handoff file excludes itself from its worktree section.
 Adapter snippets for agent instruction files live in
 `template/.harness/adapters/`.
 
+Codex and Claude Code may share one workspace and Git branch, but only one
+agent should write at a time. Stop the sender before the receiver starts. The
+receiver must resume `current_task_id`; it must not run `next` while a task is
+`in_progress` or `blocked`. This is a serial handoff protocol, not concurrent
+agent orchestration or cross-worktree synchronization.
+
+`run check` and `verify` serve different purposes:
+
+- `python3 .harness/harness.py run check` runs the configured project check for
+  quick feedback but does not create acceptance evidence.
+- `python3 .harness/harness.py verify` executes the current task's `command`
+  acceptance checks and writes evidence used by the completion gate.
+- `browser` and `manual` acceptance must be performed in the named tool or by a
+  person, actually observed, and then recorded. A command result cannot stand
+  in for that observation.
+
+These four prompts are ready to copy into either agent.
+
+### 1. Initial setup
+
+```text
+Initialize Minimal Harness in this existing project for both Codex and Claude Code. Use the source-checkout initializer with --agent both --dry-run first, review its plan, then run it for real. Edit the installed .harness/config.json and .harness/tasks.json for this project before running next. Run doctor and status, but do not claim a task until the configuration and acceptance checks are concrete.
+```
+
+### 2. Start or resume work
+
+```text
+Work in this project using Minimal Harness. Run doctor and status, then read .harness/HANDOFF.md if it exists. If current_task_id is in_progress, resume that exact task and do not run next. If it is blocked, report the blocker and do not change project files; resume mutating work only after the cause is addressed and python3 .harness/harness.py unblock TASK_ID --note "What was resolved" succeeds. If there is no active or blocked task, run next once. Stay within the frozen allowed paths, use run check for quick feedback, and use verify for command acceptance evidence.
+```
+
+### 3. Hand off
+
+```text
+Prepare a serial handoff to the other agent in this same workspace and Git branch. Stop making project changes, leave the current task active if any acceptance remains unverified, and run python3 .harness/harness.py handoff. Report the current task ID, completed work, remaining acceptance, evidence or artifacts already recorded, and the exact next action. Do not run next or mark an unobserved check passed.
+```
+
+### 4. Take over
+
+```text
+Take over this Minimal Harness task in the same workspace and Git branch. Run doctor and status, then read .harness/HANDOFF.md. If current_task_id is blocked, report the blocker and do not change project files; resume mutating work only after intervention and a successful python3 .harness/harness.py unblock TASK_ID --note "What was resolved". Otherwise resume current_task_id without running next. Inspect existing evidence, complete the remaining implementation and real acceptance actions, create all browser/manual proof artifacts before recording their evidence, rerun stale command evidence with verify, and complete only if every gate passes. Generate a fresh handoff when stopping.
+```
+
 ## Runnable Todo example
 
 ```bash
-python3 template/.harness/harness.py --workspace examples/todo doctor
-python3 template/.harness/harness.py --workspace examples/todo run check
-python3 template/.harness/harness.py --workspace examples/todo run start
+python3 template/.harness/harness.py --workspace "examples/todo" doctor
+python3 template/.harness/harness.py --workspace "examples/todo" run check
+python3 template/.harness/harness.py --workspace "examples/todo" run start
 ```
 
 Open `http://127.0.0.1:8000`, then test adding, completing, and refreshing a
@@ -263,18 +360,30 @@ python3 -m unittest discover -s tests -v
 node --test examples/todo/test.mjs
 python3 -m pip install ruff==0.15.12
 ruff check --no-cache template/.harness/harness.py integrations/github/publish_check.py scripts tests
-python3 template/.harness/harness.py --workspace template doctor
-python3 template/.harness/harness.py --workspace examples/todo doctor
-python3 template/.harness/harness.py --workspace examples/todo run check
+python3 template/.harness/harness.py --workspace "template" doctor
+python3 template/.harness/harness.py --workspace "examples/todo" doctor
+python3 template/.harness/harness.py --workspace "examples/todo" run check
 ```
 
 Real browser regression uses Playwright and Chromium for development acceptance
 only; they are not Harness runtime dependencies.
 
 ```bash
-python3 template/.harness/harness.py --workspace examples/todo run start
+python3 template/.harness/harness.py --workspace "examples/todo" run start
+
+# Default: save the final screenshot in the system temporary directory.
 python3 tests/todo_browser_acceptance.py
+
+# Or keep all three proof files inside the task workspace.
+python3 tests/todo_browser_acceptance.py --artifact-dir "examples/todo/proof"
 ```
+
+Without `--artifact-dir`, the final screenshot remains
+`minimal-harness-todo-acceptance.png` in the system temporary directory. With
+`--artifact-dir`, browser acceptance saves `add.png`, `toggle.png`, and
+`persist.png`. An artifact passed to Harness `record` must be inside the task
+workspace. Create every proof file first, then record those artifacts; creating
+or changing project-relevant proof after recording can make the evidence stale.
 
 Set `HARNESS_CDP_URL=http://127.0.0.1:9344` to reuse a dedicated
 CDP-accessible browser.
