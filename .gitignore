@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .ruff_cache/
+dist/
 .DS_Store
 examples/todo/.harness/artifacts/
 examples/todo/.harness/evidence/

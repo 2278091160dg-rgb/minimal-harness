@@ -26,6 +26,9 @@ CHECK_STATUSES = {"not_run", "passed", "failed", "unverified"}
 CHECK_TYPES = {"command", "browser", "manual"}
 SAFE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 SCHEMA_VERSION = 3
+EVIDENCE_SCHEMA_VERSION = 3
+VERIFICATION_SUBJECT_VERSION = 2
+LEGACY_VERIFICATION_SUBJECT_VERSION = 1
 sys.dont_write_bytecode = True
 
 
@@ -48,6 +51,92 @@ class GitAuditError(HarnessError):
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
+
+class StaleEvidenceError(GateError):
+    """Evidence is intact but no longer proves the current workspace state."""
+
+def escape_control_text(value: str) -> str:
+    replacements = {"\n": r"\n", "\r": r"\r", "\t": r"\t"}
+    return "".join(
+        replacements.get(character, f"\\x{ord(character):02x}")
+        if ord(character) < 32 or 127 <= ord(character) < 160
+        else character
+        for character in value
+    )
+
+def markdown_inline_text(value: Any) -> str:
+    text = escape_control_text(str(value))
+    markdown_sensitive = {"\\", "`", "*", "_", "[", "]", "<", ">", "#", "|"}
+    return "".join(f"\\{character}" if character in markdown_sensitive else character for character in text)
+
+def display_paths(paths: Sequence[str]) -> str:
+    return ", ".join(escape_control_text(path) for path in paths)
+
+def normalize_git_path(path: str) -> str:
+    return path.replace("\\", "/") if os.name == "nt" else path
+
+def git_path_excluded(path: str, excluded_paths: Sequence[str]) -> bool:
+    normalized = normalize_git_path(path)
+    return any(
+        normalized == excluded or normalized.startswith(f"{excluded.rstrip('/')}/")
+        for excluded in excluded_paths
+    )
+
+def validate_fingerprint_manifest(value: Any, field: str) -> None:
+    if not isinstance(value, dict) or not all(
+        isinstance(path, str)
+        and safe_git_relative_path(path)
+        and isinstance(fingerprint, str)
+        and (
+            valid_worktree_fingerprint(fingerprint)
+            or re.fullmatch(r"gitlink:sha256:[0-9a-f]{64}", fingerprint)
+        )
+        for path, fingerprint in value.items()
+    ):
+        raise HarnessError(f"{field} must be a safe file fingerprint manifest")
+
+def validate_verification_subject(value: Any, field: str) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        raise HarnessError(f"{field} must be an object")
+    subject_version = value.get("version")
+    if subject_version not in {
+        LEGACY_VERIFICATION_SUBJECT_VERSION,
+        VERIFICATION_SUBJECT_VERSION,
+    }:
+        raise HarnessError(
+            f"{field}.version must be {LEGACY_VERIFICATION_SUBJECT_VERSION} "
+            f"or {VERIFICATION_SUBJECT_VERSION}"
+        )
+    captured_at = require_string(value.get("captured_at"), f"{field}.captured_at")
+    snapshot = value.get("git")
+    validate_git_baseline(snapshot, f"{field}.git")
+    if snapshot.get("captured_at") != captured_at:
+        raise HarnessError(f"{field}.captured_at must match {field}.git.captured_at")
+    workspace_prefix = value.get("workspace_prefix")
+    if snapshot["available"]:
+        if not isinstance(workspace_prefix, str) or (
+            workspace_prefix and not safe_git_relative_path(workspace_prefix)
+        ):
+            raise HarnessError(f"{field}.workspace_prefix must be a normalized relative path")
+    elif workspace_prefix is not None:
+        raise HarnessError(f"{field}.workspace_prefix must be null when Git is unavailable")
+    if subject_version == VERIFICATION_SUBJECT_VERSION:
+        for name in ("tracked_fingerprints", "ignored_fingerprints"):
+            validate_fingerprint_manifest(value.get(name), f"{field}.{name}")
+            if not snapshot["available"] and value[name]:
+                raise HarnessError(f"{field}.{name} must be empty when Git is unavailable")
+    return value
+
+def changed_manifest_paths(before: Dict[str, str], after: Dict[str, str]) -> List[str]:
+    return sorted(
+        path for path in set(before) | set(after) if before.get(path) != after.get(path)
+    )
+
+def task_requires_git(task: Dict[str, Any]) -> bool:
+    policy = task.get("policy_baseline")
+    if isinstance(policy, dict) and isinstance(policy.get("require_git_for_completion"), bool):
+        return policy["require_git_for_completion"]
+    return True
 
 def read_json(path: Path) -> Dict[str, Any]:
     try:
@@ -266,7 +355,7 @@ def validate_git_baseline(value: Any, field: str) -> None:
 
 
 def safe_git_relative_path(path: str) -> bool:
-    normalized = path.replace("\\", "/")
+    normalized = normalize_git_path(path)
     return bool(
         path
         and path == normalized
@@ -461,11 +550,11 @@ def run_git(
 
 def git_workspace_prefix(workspace: Path) -> str:
     result = run_git(workspace, ["rev-parse", "--show-prefix"], "workspace prefix")
-    return result.stdout.strip().replace("\\", "/").strip("/")
+    return normalize_git_path(result.stdout.strip()).strip("/")
 
 
 def git_path_relative_to_workspace(path: str, prefix: str) -> Optional[str]:
-    normalized = path.replace("\\", "/")
+    normalized = normalize_git_path(path)
     if not prefix:
         return normalized
     marker = f"{prefix}/"
@@ -474,7 +563,10 @@ def git_path_relative_to_workspace(path: str, prefix: str) -> Optional[str]:
     return None
 
 
-def git_snapshot(workspace: Path) -> Dict[str, Any]:
+def git_snapshot(
+    workspace: Path,
+    excluded_paths: Sequence[str] = (),
+) -> Dict[str, Any]:
     try:
         probe = subprocess.run(
             ["git", "rev-parse", "--is-inside-work-tree"],
@@ -544,7 +636,15 @@ def git_snapshot(workspace: Path) -> Dict[str, Any]:
         raise GitAuditError(f"Git HEAD failed: {head_result.stderr.strip()}")
     status = run_git(
         workspace,
-        ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."],
+        [
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+            "--",
+            ".",
+        ],
         "status",
     )
     prefix = git_workspace_prefix(workspace)
@@ -564,7 +664,7 @@ def git_snapshot(workspace: Path) -> Dict[str, Any]:
             index += 1
         for path in paths:
             relative = git_path_relative_to_workspace(path, prefix)
-            if relative is not None:
+            if relative is not None and not git_path_excluded(relative, excluded_paths):
                 dirty_paths.append(relative)
     unique_dirty_paths = sorted(set(dirty_paths))
     return {
@@ -597,9 +697,14 @@ def workspace_path_fingerprint(workspace: Path, path: str) -> str:
             if path in links:
                 return submodule_fingerprint(workspace, path, links[path])
         if candidate.exists():
-            raise GitAuditError(f"Git cannot fingerprint non-regular dirty path: {path}")
+            raise GitAuditError(
+                f"Git cannot fingerprint non-regular dirty path: {escape_control_text(path)}"
+            )
     except OSError as exc:
-        raise GitAuditError(f"Git worktree fingerprint failed for {path}: {exc}") from exc
+        raise GitAuditError(
+            f"Git worktree fingerprint failed for {escape_control_text(path)}: "
+            f"{escape_control_text(str(exc))}"
+        ) from exc
     return "missing"
 
 
@@ -609,7 +714,12 @@ def git_index_fingerprint(workspace: Path, path: str) -> str:
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
 
 
-def git_committed_changes(workspace: Path, baseline_head: Optional[str], current_head: Optional[str]) -> List[str]:
+def git_committed_changes(
+    workspace: Path,
+    baseline_head: Optional[str],
+    current_head: Optional[str],
+    excluded_paths: Sequence[str] = (),
+) -> List[str]:
     if baseline_head == current_head:
         return []
     if current_head is None:
@@ -627,13 +737,18 @@ def git_committed_changes(workspace: Path, baseline_head: Optional[str], current
         for path in result.stdout.split("\0")
         if path
     )
-    return sorted(path for path in relative_paths if path is not None)
+    return sorted(
+        path
+        for path in relative_paths
+        if path is not None and not git_path_excluded(path, excluded_paths)
+    )
 
 
 def changed_paths_since_baseline(
     workspace: Path,
     baseline: Dict[str, Any],
     current: Dict[str, Any],
+    excluded_paths: Sequence[str] = (),
 ) -> List[str]:
     if not baseline.get("available"):
         return []
@@ -643,7 +758,14 @@ def changed_paths_since_baseline(
         raise GateError(
             f"Git branch changed during task: {baseline.get('branch')} -> {current.get('branch')}"
         )
-    changed = set(git_committed_changes(workspace, baseline.get("head"), current.get("head")))
+    changed = set(
+        git_committed_changes(
+            workspace,
+            baseline.get("head"),
+            current.get("head"),
+            excluded_paths,
+        )
+    )
     baseline_dirty = set(baseline.get("dirty_paths", []))
     changed.update(set(current.get("dirty_paths", [])) - baseline_dirty)
     for path, fingerprint in baseline.get("worktree_fingerprints", {}).items():
@@ -656,7 +778,7 @@ def changed_paths_since_baseline(
 
 
 def path_allowed(path: str, patterns: List[str]) -> bool:
-    normalized = path.replace("\\", "/")
+    normalized = normalize_git_path(path)
     for pattern in patterns:
         normalized_pattern = pattern.replace("\\", "/")
         if path_segments_match(normalized.split("/"), normalized_pattern.split("/")):
@@ -710,8 +832,32 @@ def evidence_details_for_handoff(
         "timestamp": evidence.get("timestamp", "Unknown"),
         "summary": evidence.get("summary", "No summary"),
         "path": reference,
+        "not_git_bound_by_policy": not task_requires_git(task),
     }
 
+
+def completed_task_evidence_label(
+    workspace: Path,
+    harness_dir: Path,
+    task: Dict[str, Any],
+) -> str:
+    legacy = task.get("legacy_evidence") is True
+    try:
+        for check in task["acceptance"]:
+            evidence = validate_evidence_reference(workspace, harness_dir, task, check)
+            if evidence is not None and (evidence.get("schema_version") != EVIDENCE_SCHEMA_VERSION
+                                         or "source_snapshot" not in evidence):
+                legacy = True
+            if (
+                evidence is not None
+                and isinstance(evidence.get("verification_subject"), dict)
+                and evidence["verification_subject"].get("version")
+                != VERIFICATION_SUBJECT_VERSION
+            ):
+                legacy = True
+    except (HarnessError, OSError) as exc:
+        return f" [evidence invalid: {markdown_inline_text(exc)}]"
+    return " [legacy evidence]" if legacy else ""
 
 def historical_failures_for_handoff(workspace: Path, harness_dir: Path) -> List[Dict[str, Any]]:
     failures = []
@@ -735,8 +881,8 @@ def historical_failures_for_handoff(workspace: Path, harness_dir: Path) -> List[
             evidence = read_json(evidence_path)
             if evidence.get("result") != "failed":
                 continue
-            if evidence.get("schema_version") != SCHEMA_VERSION:
-                raise HarnessError("historical evidence is not schema v3")
+            if evidence.get("schema_version") not in {2, SCHEMA_VERSION}:
+                raise HarnessError("historical evidence has an unsupported schema")
             task_id = require_identifier(evidence.get("task_id"), "historical evidence task_id")
             check_id = require_identifier(evidence.get("check_id"), "historical evidence check_id")
             timestamp = require_string(evidence.get("timestamp"), "historical evidence timestamp")
@@ -749,7 +895,9 @@ def historical_failures_for_handoff(workspace: Path, harness_dir: Path) -> List[
                 "browser": "browser-attestation",
                 "manual": "manual-attestation",
             }[method]
-            if evidence.get("provenance") != expected_provenance:
+            legacy_browser = (method == "browser" and "source_snapshot" not in evidence
+                              and evidence.get("provenance") == "browser-tool")
+            if evidence.get("provenance") != expected_provenance and not legacy_browser:
                 raise HarnessError("historical evidence provenance is invalid")
             log_metadata = evidence.get("log")
             if log_metadata is not None:
@@ -813,46 +961,48 @@ def render_handoff(workspace: Path, config: Dict[str, Any], state: Dict[str, Any
         "",
         "## Project state",
         "",
-        f"- Project: {config['project_name']}",
+        f"- Project: {markdown_inline_text(config['project_name'])}",
         f"- Snapshot schema: {SCHEMA_VERSION}",
         f"- Snapshot captured: {snapshot['captured_at']}",
         f"- Generated: {utc_now()}",
-        f"- Branch: {snapshot['branch'] or 'Unavailable'}",
-        f"- HEAD: {snapshot['head'] or 'Unavailable'}",
+        f"- Branch: {markdown_inline_text(snapshot['branch'] or 'Unavailable')}",
+        f"- HEAD: {markdown_inline_text(snapshot['head'] or 'Unavailable')}",
         f"- Current task: {current_id or 'None'}",
         "",
         "## Current acceptance",
         "",
     ]
     if current:
-        lines.append(f"### {current['id']}: {current['title']} [{current['status']}]")
+        lines.append(f"### {current['id']}: {markdown_inline_text(current['title'])} [{current['status']}]")
         lines.append("")
         for check in current["acceptance"]:
             details = evidence_details_for_handoff(workspace, workspace / ".harness", current, check, config)
             displayed_status = check["status"]
             if displayed_status == "passed" and (not details or not details["valid"]):
                 displayed_status = "unverified (stored passed; stale evidence)"
-            lines.append(f"- {check['id']} [{displayed_status}] ({check['type']}): {check['instruction']}")
+            lines.append(f"- {check['id']} [{displayed_status}] ({check['type']}): {markdown_inline_text(check['instruction'])}")
             if details:
                 if details["valid"]:
-                    lines.append(f"  - Evidence time: {details['timestamp']}")
-                    lines.append(f"  - Evidence summary: {details['summary']}")
-                    lines.append(f"  - Evidence path: {details['path']}")
+                    lines.append(f"  - Evidence time: {markdown_inline_text(details['timestamp'])}")
+                    lines.append(f"  - Evidence summary: {markdown_inline_text(details['summary'])}")
+                    lines.append(f"  - Evidence path: {markdown_inline_text(details['path'])}")
+                    if details["not_git_bound_by_policy"]:
+                        lines.append("  - WARNING: Evidence is not Git-bound by policy")
                 else:
-                    lines.append(f"  - Evidence invalid: {details['error']}")
+                    lines.append(f"  - Evidence invalid: {markdown_inline_text(details['error'])}")
     else:
         lines.append("None")
     lines.extend(["", "## Recently completed", ""])
     lines.extend(
         [
-            f"- {task['id']}: {task['title']}"
-            + (" [legacy evidence]" if task.get("legacy_evidence") is True else "")
+            f"- {task['id']}: {markdown_inline_text(task['title'])}"
+            + completed_task_evidence_label(workspace, workspace / ".harness", task)
             for task in completed
         ]
         or ["None"]
     )
     lines.extend(["", "## Failures and blockers", ""])
-    failure_lines = [f"- {task['id']}: {task.get('block_reason', 'blocked')}" for task in blocked]
+    failure_lines = [f"- {task['id']}: {markdown_inline_text(task.get('block_reason', 'blocked'))}" for task in blocked]
     failure_lines.extend(
         f"- {task['id']}/{check['id']}: failed ({check['consecutive_failures']} consecutive)"
         for task, check in failed_checks
@@ -860,21 +1010,21 @@ def render_handoff(workspace: Path, config: Dict[str, Any], state: Dict[str, Any
     failure_lines.extend(
         (
             "- Historical failure record (untrusted summary omitted) "
-            f"{item['task_id']}/{item['check_id']} at {item['timestamp']}: {item['path']}"
+            f"{item['task_id']}/{item['check_id']} at {markdown_inline_text(item['timestamp'])}: {markdown_inline_text(item['path'])}"
             if item["valid"]
-            else f"- Historical evidence invalid {item['path']}: {item['error']}"
+            else f"- Historical evidence invalid {markdown_inline_text(item['path'])}: {markdown_inline_text(item['error'])}"
         )
         for item in historical_failures
     )
     lines.extend(failure_lines or ["None"])
     lines.extend(["", "## Unverified", ""])
-    lines.extend([f"- {task['id']}/{check['id']}: {check['instruction']}" for task, check in unverified_checks] or ["None"])
+    lines.extend([f"- {task['id']}/{check['id']}: {markdown_inline_text(check['instruction'])}" for task, check in unverified_checks] or ["None"])
     lines.extend(["", "## Working tree (excluding generated .harness/HANDOFF.md)", ""])
     if snapshot["available"]:
         displayed_paths = [
             path for path in snapshot["dirty_paths"] if path != ".harness/HANDOFF.md"
         ]
-        lines.extend([f"- {path}" for path in displayed_paths] or ["Clean"])
+        lines.extend([f"- {markdown_inline_text(path)}" for path in displayed_paths] or ["Clean"])
     else:
         lines.append("Git unavailable or workspace is not a repository.")
     if current and current.get("git_baseline", {}).get("available"):
@@ -890,11 +1040,11 @@ def render_handoff(workspace: Path, config: Dict[str, Any], state: Dict[str, Any
             ]
             if outside:
                 lines.append("WARNING: These task changes are outside policy.allowed_paths:")
-                lines.extend(f"- {path}" for path in outside)
+                lines.extend(f"- {markdown_inline_text(path)}" for path in outside)
             else:
                 lines.append("None")
         except (GateError, GitAuditError) as exc:
-            lines.append(f"WARNING: Scope audit unavailable: {exc}")
+            lines.append(f"WARNING: Scope audit unavailable: {markdown_inline_text(exc)}")
     relevant_task = current or (completed[0] if completed else None)
     baseline_dirty = (
         relevant_task.get("git_baseline", {}).get("dirty_paths", []) if relevant_task else []
@@ -902,7 +1052,7 @@ def render_handoff(workspace: Path, config: Dict[str, Any], state: Dict[str, Any
     lines.extend(["", "## Pre-existing changes at task start", ""])
     if baseline_dirty:
         lines.append("WARNING: These paths existed before the task and are not attributed to it unless their content changed.")
-        lines.extend(f"- {path}" for path in baseline_dirty)
+        lines.extend(f"- {markdown_inline_text(path)}" for path in baseline_dirty)
     else:
         lines.append("None")
     lines.extend(["", "## Next action", ""])
@@ -912,7 +1062,7 @@ def render_handoff(workspace: Path, config: Dict[str, Any], state: Dict[str, Any
             lines.append(f"Run `{audit['next_command']}`.")
         if audit["issues"]:
             lines.extend(["", "### Completion audit", ""])
-            lines.extend(f"- {issue}" for issue in audit["issues"])
+            lines.extend(f"- {markdown_inline_text(issue)}" for issue in audit["issues"])
     elif any(task["status"] == "pending" for task in state["tasks"]):
         lines.append("Run `python3 .harness/harness.py next`.")
     else:
@@ -1086,7 +1236,7 @@ def validate_evidence_reference(
     harness_dir: Path,
     task: Dict[str, Any],
     check: Dict[str, Any],
-) -> None:
+) -> Optional[Dict[str, Any]]:
     reference = check.get("latest_evidence")
     if reference is None:
         if task.get("legacy_evidence") is True and task.get("status") == "done":
@@ -1118,10 +1268,15 @@ def validate_evidence_reference(
     if not isinstance(expected_digest, str) or file_sha256(evidence_path) != expected_digest:
         raise HarnessError(f"evidence digest does not match for {task['id']}/{check['id']}")
     evidence = read_json(evidence_path)
-    if evidence.get("schema_version") != SCHEMA_VERSION:
+    version = evidence.get("schema_version")
+    if version not in {2, SCHEMA_VERSION}:
         if task.get("legacy_evidence") is True and task.get("status") == "done":
-            return
+            return evidence
         raise HarnessError(f"evidence schema_version must be {SCHEMA_VERSION} for {task['id']}/{check['id']}")
+    if "verification_subject" in evidence:
+        validate_verification_subject(evidence["verification_subject"], "evidence verification_subject")
+    if "source_snapshot" in evidence:
+        validate_source_snapshot(evidence["source_snapshot"], "evidence source_snapshot")
     expected = {
         "task_id": task["id"],
         "check_id": check["id"],
@@ -1152,13 +1307,16 @@ def validate_evidence_reference(
         "browser": "browser-attestation",
         "manual": "manual-attestation",
     }[check["type"]]
-    if evidence.get("provenance") != expected_provenance:
+    legacy_browser = (check["type"] == "browser" and "source_snapshot" not in evidence
+                      and evidence.get("provenance") == "browser-tool")
+    if evidence.get("provenance") != expected_provenance and not legacy_browser:
         raise HarnessError(f"evidence provenance does not match for {task['id']}/{check['id']}")
     if check["type"] == "browser" and check["status"] == "passed":
         if not isinstance(evidence.get("tool"), str) or not evidence["tool"].strip():
             raise HarnessError(f"passed browser evidence requires a tool for {task['id']}/{check['id']}")
         if not artifacts:
             raise HarnessError(f"passed browser evidence requires an artifact for {task['id']}/{check['id']}")
+    return evidence
 
 
 def validate_file_metadata(
@@ -1207,7 +1365,9 @@ def command_doctor(workspace: Path) -> int:
     for name, argv in config["commands"].items():
         if argv is not None and not executable_available(workspace, argv[0]):
             raise HarnessError(f"commands.{name} executable not found: {argv[0]}")
+    stale_issues = []
     for task in state["tasks"]:
+        current_source = None
         for check in task["acceptance"]:
             if check["type"] == "command" and not executable_available(
                 workspace, check["command"][0]
@@ -1215,7 +1375,26 @@ def command_doctor(workspace: Path) -> int:
                 raise HarnessError(
                     f"acceptance {task['id']}/{check['id']} executable not found: {check['command'][0]}"
                 )
-            validate_evidence_reference(workspace, harness_dir, task, check)
+            evidence = validate_evidence_reference(workspace, harness_dir, task, check)
+            if task["status"] in {"in_progress", "blocked"} and check["status"] == "passed":
+                try:
+                    require_current_contract(task)
+                    if current_source is None:
+                        current_source = source_snapshot(workspace, effective_policy(task, config))
+                    evidence_freshness(workspace, harness_dir, task, check, current_source)
+                except (GateError, GitAuditError) as exc:
+                    stale_issues.append(f"{task['id']}/{check['id']}: {exc}")
+            if task["status"] == "done" and evidence is not None:
+                version = evidence.get("schema_version")
+                if version != SCHEMA_VERSION:
+                    print(f"WARNING: {task['id']}/{check['id']} uses legacy schema v{version} evidence")
+                elif "source_snapshot" not in evidence:
+                    subject = evidence.get("verification_subject")
+                    label = f"legacy verification subject v{subject['version']}" if isinstance(subject, dict) else "legacy evidence"
+                    print(f"WARNING: {task['id']}/{check['id']} uses {label}")
+        if (task["status"] in {"in_progress", "blocked"} and not task_requires_git(task)
+                and any(check["status"] == "passed" for check in task["acceptance"])):
+            print(f"WARNING: {task['id']} evidence is not Git-bound by policy; local source contents remain bound")
     print(f"OK: configuration valid ({len(state['tasks'])} tasks)")
     snapshot = git_snapshot(workspace)
     if snapshot["available"]:
@@ -1224,7 +1403,9 @@ def command_doctor(workspace: Path) -> int:
             print(f"WARNING: working tree has {len(snapshot['dirty_paths'])} changed path(s)")
     else:
         print("WARNING: Git unavailable or workspace is not a repository")
-    return 0
+    for issue in stale_issues:
+        print("WARNING: " + escape_control_text(issue), file=sys.stderr)
+    return 1 if stale_issues else 0
 
 
 def command_next(workspace: Path) -> int:
@@ -1502,7 +1683,10 @@ def command_complete(workspace: Path, task_id: str) -> int:
     task = find_task(state, task_id)
     audit = completion_audit(workspace, harness_dir, config, state, task)
     if not audit["ready"]:
-        raise GateError("; ".join(audit["issues"]))
+        error = HarnessError if audit["exit_code"] == 2 else GateError
+        raise error("; ".join(audit["issues"]))
+    if not audit["git_bound_by_policy"]:
+        print(f"WARNING: {task_id} evidence is not Git-bound by policy; local source contents remain bound")
     task["status"] = "done"
     task["completed_at"] = utc_now()
     state["current_task_id"] = None
@@ -1711,7 +1895,7 @@ def snapshot_excluded(path: str) -> bool:
         return True
     return any(path == prefix or path.startswith(prefix + "/") for prefix in (
         ".git", ".harness/evidence", ".harness/migrations", ".harness/attempts",
-        ".harness/artifacts", ".harness/reports", ".harness/__pycache__"))
+        ".harness/artifacts", ".harness/reports", ".harness/logs", ".harness/__pycache__"))
 
 
 def gitlink_entries(workspace: Path, path: str = ".") -> Dict[str, str]:
@@ -1800,7 +1984,24 @@ def source_snapshot(workspace: Path, policy: Dict[str, Any]) -> Dict[str, Any]:
         if not snapshot_excluded(path):
             fingerprints[path] = (submodule_fingerprint(workspace, path, links[path])
                                   if path in links else workspace_path_fingerprint(workspace, path))
-    return {"method": method, "fingerprint": canonical_digest(fingerprints), "files": fingerprints}
+    index_fingerprints = {}
+    if git["available"]:
+        result = run_git(workspace, ["ls-files", "--stage", "-z", "--", "."], "source index inventory")
+        entries = {}
+        for record in result.stdout.split("\0"):
+            if not record:
+                continue
+            header, separator, path = record.partition("\t")
+            if not separator or not safe_git_relative_path(path):
+                raise GitAuditError("Git returned malformed source index entries")
+            if not snapshot_excluded(path):
+                entries.setdefault(path, []).append(header)
+        index_fingerprints = {path: canonical_digest(headers) for path, headers in entries.items()}
+    identity = {"available": git["available"], "branch": git["branch"], "head": git["head"],
+                "workspace_prefix": git_workspace_prefix(workspace) if git["available"] else None,
+                "index_fingerprints": index_fingerprints}
+    return {"method": method, "fingerprint": canonical_digest(fingerprints), "files": fingerprints,
+            "git": identity}
 
 
 def display_log(path: Path) -> None:
@@ -1813,14 +2014,72 @@ def display_log(path: Path) -> None:
                 print(decode_command_output(chunk), end="")
 
 
+def validate_source_snapshot(value: Any, field: str) -> None:
+    if not isinstance(value, dict):
+        raise HarnessError(f"{field} must be an object")
+    if value.get("method") not in {"git-tracked-and-nonignored", "filesystem-no-git"}:
+        raise HarnessError(f"{field}.method is invalid")
+    files = value.get("files")
+    if not isinstance(files, dict) or not all(
+        isinstance(path, str) and safe_git_relative_path(path) and isinstance(digest, str)
+        and (valid_worktree_fingerprint(digest) or re.fullmatch(
+            r"gitlink:[0-9a-f]{40,64}:head:[0-9a-f]{40,64}:sha256:[0-9a-f]{64}", digest))
+        for path, digest in files.items()
+    ):
+        raise HarnessError(f"{field}.files must be a safe source fingerprint manifest")
+    if value.get("fingerprint") != canonical_digest(files):
+        raise HarnessError(f"{field}.fingerprint does not match its files")
+    identity = value.get("git")
+    if not isinstance(identity, dict) or not isinstance(identity.get("available"), bool):
+        raise HarnessError(f"{field}.git must be a stable Git identity")
+    index = identity.get("index_fingerprints")
+    if not isinstance(index, dict) or not all(
+        isinstance(path, str) and safe_git_relative_path(path) and isinstance(digest, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", digest) for path, digest in index.items()
+    ):
+        raise HarnessError(f"{field}.git.index_fingerprints is invalid")
+    if identity["available"]:
+        require_string(identity.get("branch"), f"{field}.git.branch")
+        head = identity.get("head")
+        if head is not None and (not isinstance(head, str) or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", head)):
+            raise HarnessError(f"{field}.git.head is invalid")
+        prefix = identity.get("workspace_prefix")
+        if not isinstance(prefix, str) or (prefix and not safe_git_relative_path(prefix)):
+            raise HarnessError(f"{field}.git.workspace_prefix is invalid")
+    elif any(identity.get(name) is not None for name in ("branch", "head", "workspace_prefix")) or index:
+        raise HarnessError(f"{field}.git unavailable identity must not contain Git state")
+
+
+def source_snapshot_change_reason(before: Dict[str, Any], after: Dict[str, Any]) -> str:
+    reasons = []
+    old_git, new_git = before["git"], after["git"]
+    for key, label in (("available", "Git availability"), ("workspace_prefix", "Git workspace location"),
+                       ("branch", "Git branch"), ("head", "Git HEAD")):
+        if old_git.get(key) != new_git.get(key):
+            reasons.append(f"{label} changed from {old_git.get(key)} to {new_git.get(key)}")
+    paths = sorted(set(changed_manifest_paths(before["files"], after["files"]))
+                   | set(changed_manifest_paths(old_git["index_fingerprints"], new_git["index_fingerprints"])))
+    if paths:
+        reasons.append("changed paths: " + display_paths(paths))
+    return "; ".join(reasons) or "source inventory changed"
+
+
 def evidence_freshness(workspace: Path, harness_dir: Path, task: Dict[str, Any],
                        check: Dict[str, Any], snapshot: Dict[str, Any]) -> None:
-    validate_evidence_reference(workspace, harness_dir, task, check)
-    evidence = read_json(resolve_inside(check["latest_evidence"], workspace, "evidence path"))
+    evidence = validate_evidence_reference(workspace, harness_dir, task, check)
+    if evidence is None:
+        raise HarnessError("passed acceptance requires valid evidence")
+    if evidence.get("schema_version") != SCHEMA_VERSION or "source_snapshot" not in evidence:
+        subject = evidence.get("verification_subject")
+        origin = (f"legacy verification subject v{subject['version']}" if isinstance(subject, dict)
+                  else f"legacy schema v{evidence.get('schema_version')}")
+        raise StaleEvidenceError(f"stale evidence: {origin} has no v3 acceptance binding; re-run verification")
     if evidence.get("contract_fingerprint") != contract_fingerprint(task):
-        raise GateError("evidence acceptance contract is stale")
+        raise StaleEvidenceError("stale evidence: evidence acceptance contract is stale; re-run verification")
     if evidence.get("source_snapshot") != snapshot:
-        raise GateError("evidence source snapshot is stale")
+        raise StaleEvidenceError("stale evidence: evidence source snapshot is stale; "
+                                 + source_snapshot_change_reason(evidence["source_snapshot"], snapshot)
+                                 + "; re-run verification")
     if check["type"] == "command":
         if evidence.get("source_after") != snapshot or evidence.get("run_reason") != "exit":
             raise GateError("command did not finish against a consistent source snapshot")
@@ -1852,6 +2111,7 @@ def evidence_freshness(workspace: Path, harness_dir: Path, task: Dict[str, Any],
 def completion_audit(workspace: Path, harness_dir: Path, config: Dict[str, Any],
                      state: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
     issues = []
+    integrity_errors = []
     if task["status"] == "done":
         issues.append("historical done task; cannot be consumed as an active task")
     elif task["status"] != "in_progress":
@@ -1883,6 +2143,8 @@ def completion_audit(workspace: Path, harness_dir: Path, config: Dict[str, Any],
                                summary=evidence["summary"], artifacts=evidence["artifacts"])
             except (HarnessError, OSError, TypeError) as exc:
                 check_issues.append(f"acceptance {check['id']} lacks valid evidence: {exc}")
+                if not isinstance(exc, GateError):
+                    integrity_errors.append(check_issues[-1])
         issues.extend(check_issues)
         checks.append({"id": check["id"], "type": check["type"], "status": check["status"],
                        "ready": not check_issues and snapshot is not None, "issues": check_issues, **details})
@@ -1899,7 +2161,7 @@ def completion_audit(workspace: Path, harness_dir: Path, config: Dict[str, Any],
             outside = [path for path in changed if not snapshot_excluded(path)
                        and not path_allowed(path, effective_policy(task, config)["allowed_paths"])]
             if outside:
-                raise GateError(f"new changes outside allowed_paths: {', '.join(outside)}")
+                raise GateError(f"new changes outside allowed_paths: {display_paths(outside)}")
     except (HarnessError, OSError) as exc:
         issues.append(str(exc))
         git_next_command = ("git status --short" if "outside allowed_paths" in str(exc)
@@ -1924,31 +2186,35 @@ def completion_audit(workspace: Path, harness_dir: Path, config: Dict[str, Any],
         next_command = f"python3 .harness/harness.py record {task['id']} <check-id> --result <result> --summary '<observation>'"
     return {"schema_version": SCHEMA_VERSION, "task_id": task["id"], "task_status": task["status"],
             "historical": task["status"] == "done", "ready": not issues, "checks": checks,
-            "issues": issues, "next_command": next_command}
+            "issues": issues, "next_command": next_command,
+            "exit_code": 2 if integrity_errors else (1 if issues else 0),
+            "integrity_errors": integrity_errors,
+            "git_bound_by_policy": task_requires_git(task)}
 
 
 def command_report(workspace: Path, task_id: str, output_format: str) -> int:
     harness_dir, config, state = load_workspace(workspace)
     result = completion_audit(workspace, harness_dir, config, state, find_task(state, task_id))
     if output_format == "json":
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print(json.dumps(result, ensure_ascii=True, indent=2))
     else:
+        render = markdown_inline_text if output_format == "markdown" else escape_control_text
         prefix = "# " if output_format == "markdown" else ""
         print(f"{prefix}{task_id} [{result['task_status']}] — {'ready' if result['ready'] else 'not ready'}")
         for check in result["checks"]:
-            print(f"- {check['id']}: {check['status']} — {check['instruction']}")
+            print(f"- {check['id']}: {check['status']} — {render(check['instruction'])}")
             if check["evidence_path"]:
                 label = check["provenance"] if check["evidence_valid"] else "unverified or stale"
-                print(f"  Evidence ({label}): {check['evidence_path']}")
+                print(f"  Evidence ({label}): {render(check['evidence_path'])}")
             if check["summary"]:
-                print(f"  Summary: {check['summary']}")
+                print(f"  Summary: {render(check['summary'])}")
             for artifact in check["artifacts"]:
-                print(f"  Artifact: {artifact['path']}")
+                print(f"  Artifact: {render(artifact['path'])}")
         for issue in result["issues"]:
-            print(f"- {issue}")
+            print(f"- {render(issue)}")
         if result["next_command"]:
-            print(f"Next: {result['next_command']}")
-    return 0 if result["ready"] else 1
+            print(f"Next: {render(result['next_command'])}")
+    return result["exit_code"]
 
 
 def parse_task_definition(path: Path) -> Dict[str, Any]:
@@ -2087,10 +2353,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return command_migrate(workspace, args.dry_run, args.note)
         raise HarnessError(f"unsupported command: {args.command}")
     except HarnessError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {escape_control_text(str(exc))}", file=sys.stderr)
         return exc.exit_code
     except (ValueError, OSError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {escape_control_text(str(exc))}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)

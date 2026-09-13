@@ -291,35 +291,50 @@ class BoundedRunnerTest(unittest.TestCase):
             def write(self, _data):
                 raise OSError("injected log failure")
 
+        real_job = self.runner._WindowsJob
+        jobs = []
+
         class TrackingJob:
-            closed = False
+            def __init__(self, process):
+                self.job = real_job(process)
+                self.closed = False
+                self.was_assigned = self.job._handle is not None
+                jobs.append(self)
 
             def terminate(self, _returncode):
+                # Exercise the native taskkill fallback without skipping Job assignment.
                 return False
 
             def close(self):
+                self.job.close()
                 self.closed = True
 
         processes = []
+        cleanup_processes = []
         real_popen = subprocess.Popen
 
         def start_real_process(*args, **kwargs):
             process = real_popen(*args, **kwargs)
-            processes.append(process)
+            if args[0][0] == "taskkill":
+                cleanup_processes.append((list(args[0]), process))
+            else:
+                processes.append(process)
             return process
 
-        job = TrackingJob()
+        pid_path = self.workspace / "reader-error-child.pid"
         with (
             mock.patch.object(self.runner.Path, "open", return_value=BrokenLog()),
             mock.patch.object(self.runner.subprocess, "Popen", side_effect=start_real_process),
-            mock.patch.object(self.runner, "_WindowsJob", return_value=job),
+            mock.patch.object(self.runner, "_WindowsJob", TrackingJob),
         ):
             with self.assertRaisesRegex(OSError, "injected log failure"):
                 self.runner.run_bounded(
                     [
                         sys.executable,
                         "-c",
-                        "import os, sys, time; os.write(sys.stdout.fileno(), b'x'); time.sleep(30)",
+                        "import os, pathlib, sys, time; "
+                        f"pathlib.Path({str(pid_path)!r}).write_text(str(os.getpid()), encoding='ascii'); "
+                        "os.write(sys.stdout.fileno(), b'x'); time.sleep(30)",
                     ],
                     self.workspace,
                     self.workspace / "ignored.log",
@@ -328,7 +343,22 @@ class BoundedRunnerTest(unittest.TestCase):
         self.assertEqual(1, len(processes))
         self.assertIsNotNone(processes[0].poll())
         self.assertTrue(processes[0].stdout.closed)
-        self.assertTrue(job.closed)
+        self.assertEqual(1, len(jobs))
+        self.assertTrue(jobs[0].closed)
+        self.assertIsNone(jobs[0].job._handle)
+        self.assert_process_gone(int(pid_path.read_text(encoding="ascii")))
+        if os.name == "nt":
+            self.assertTrue(jobs[0].was_assigned)
+            self.assertEqual(
+                [sys.executable, "-I", "-c", self.runner._WINDOWS_LAUNCHER],
+                processes[0].args,
+            )
+            self.assertEqual(1, len(cleanup_processes))
+            argv, cleanup_process = cleanup_processes[0]
+            self.assertEqual(["taskkill", "/PID", str(processes[0].pid), "/T", "/F"], argv)
+            self.assertIsNotNone(cleanup_process.poll())
+        else:
+            self.assertEqual([], cleanup_processes)
 
     def test_job_setup_error_terminates_process_and_closes_stdout(self):
         processes = []
@@ -694,6 +724,14 @@ class BoundedRunnerTest(unittest.TestCase):
 
         processes = []
         real_popen = subprocess.Popen
+        real_thread = threading.Thread
+        thread_names = []
+
+        def create_thread(**kwargs):
+            thread_names.append(kwargs.get("name"))
+            if kwargs.get("name") == "harness-output":
+                return FailingThread(**kwargs)
+            return real_thread(**kwargs)
 
         def start_real_process(*args, **kwargs):
             process = real_popen(*args, **kwargs)
@@ -705,11 +743,15 @@ class BoundedRunnerTest(unittest.TestCase):
                 mock.patch.object(
                     self.runner.subprocess, "Popen", side_effect=start_real_process
                 ),
-                mock.patch.object(self.runner.threading, "Thread", FailingThread),
+                mock.patch.object(self.runner.threading, "Thread", side_effect=create_thread),
             ):
                 with self.assertRaisesRegex(RuntimeError, "cannot start new thread"):
                     self.run_python("import time; time.sleep(30)")
 
+            self.assertIn("harness-output", thread_names)
+            if os.name == "nt":
+                self.assertEqual(["harness-windows-launch", "harness-output"], thread_names)
+            self.assertEqual(1, len(processes))
             self.assertIsNotNone(processes[0].poll())
             self.assertTrue(processes[0].stdout.closed)
         finally:
@@ -727,6 +769,14 @@ class BoundedRunnerTest(unittest.TestCase):
 
         processes = []
         real_popen = subprocess.Popen
+        real_thread = threading.Thread
+        thread_names = []
+
+        def create_thread(**kwargs):
+            thread_names.append(kwargs.get("name"))
+            if kwargs.get("name") == "harness-output":
+                return FailingThread(**kwargs)
+            return real_thread(**kwargs)
 
         def start_real_process(*args, **kwargs):
             process = real_popen(*args, **kwargs)
@@ -738,13 +788,17 @@ class BoundedRunnerTest(unittest.TestCase):
                 mock.patch.object(
                     self.runner.subprocess, "Popen", side_effect=start_real_process
                 ),
-                mock.patch.object(self.runner.threading, "Thread", FailingThread),
+                mock.patch.object(self.runner.threading, "Thread", side_effect=create_thread),
             ):
                 with self.assertRaisesRegex(RuntimeError, "cannot create new thread"):
                     self.run_python(
                         "import time; time.sleep(30)", name="thread-create.log"
                     )
 
+            self.assertIn("harness-output", thread_names)
+            if os.name == "nt":
+                self.assertEqual(["harness-windows-launch", "harness-output"], thread_names)
+            self.assertEqual(1, len(processes))
             self.assertIsNotNone(processes[0].poll())
             self.assertTrue(processes[0].stdout.closed)
         finally:

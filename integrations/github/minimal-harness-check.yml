@@ -1,0 +1,60 @@
+# Copy this file to .github/workflows/minimal-harness-check.yml.
+name: Minimal Harness
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Validate Harness state
+        run: python .harness/harness.py doctor
+      - name: Run configured project check
+        run: python .harness/harness.py run check
+
+  publish-check-run:
+    if: ${{ always() && github.event_name == 'push' }}
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Prepare trusted summary
+        shell: bash
+        env:
+          VERIFY_RESULT: ${{ needs.verify.result }}
+        run: |
+          if [[ "$VERIFY_RESULT" == "success" ]]; then
+            conclusion=success
+            title="Minimal Harness passed"
+          else
+            conclusion=failure
+            title="Minimal Harness failed"
+          fi
+          printf '%s\n' "$title" > minimal-harness-summary.md
+          printf 'CONCLUSION=%s\n' "$conclusion" >> "$GITHUB_ENV"
+          printf 'CHECK_TITLE=%s\n' "$title" >> "$GITHUB_ENV"
+      - name: Publish GitHub Check Run
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python integrations/github/publish_check.py
+          --conclusion "$CONCLUSION"
+          --title "$CHECK_TITLE"
+          --summary-file minimal-harness-summary.md
+      - name: Preserve verification failure
+        if: ${{ needs.verify.result != 'success' }}
+        run: exit 1

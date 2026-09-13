@@ -1,4 +1,8 @@
-# Minimal AI Coding Harness
+# Minimal Harness
+
+[![CI](https://github.com/2278091160dg-rgb/minimal-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/2278091160dg-rgb/minimal-harness/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/2278091160dg-rgb/minimal-harness)](https://github.com/2278091160dg-rgb/minimal-harness/releases/latest)
+[![MIT License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A small, local acceptance and handoff tool for coding agents. Define what must work,
 run the checks, keep evidence, and only complete a task while that evidence matches
@@ -6,7 +10,15 @@ both the current source and the agreed acceptance definition.
 
 **Python 3.9+ standard library · Git · one writer · no model API or service**
 
-[中文说明](docs/README.zh-CN.md) · [First-time user validation](docs/adoption-validation.md)
+[中文说明](README.zh-CN.md) · [First-time user validation](docs/adoption-validation.md)
+
+## Downloads and versions
+
+[Release downloads](https://github.com/2278091160dg-rgb/minimal-harness/releases) include
+runtime ZIPs and `SHA256SUMS.txt`. This README describes the schema v3 development version;
+the published v0.1.1 workflow predates `init`, `task add/revise` and `report`. Use the source
+checkout below to try v3. Upgrade an existing workspace through the explicit migration
+steps below, preserving its configuration, tasks and historical evidence.
 
 ## Try a complete task
 
@@ -120,7 +132,9 @@ change; `task revise` does not expand permission to edit other files.
   block a task after three consecutive failures of one check.
 
 For command verification, source and acceptance digests must match before and after the
-run. Completion recalculates them. Generated runtime state, evidence, attempts, migration
+run. Completion recalculates them. Git branch, HEAD and index identity are also bound:
+staging changes or creating a commit after verification requires another verification.
+Generated runtime state, evidence, attempts, legacy `.harness/logs/`, migration
 archives, managed `.harness/artifacts/`, reports, HANDOFF and the runtime's
 `.harness/__pycache__/` are fixed exclusions. Git-tracked and non-ignored files are checked;
 Harness code and configuration are checked even when `.harness/` is ignored. Do not store
@@ -130,7 +144,8 @@ uninitialized submodules and hidden index flags stop verification with a diagnos
 
 Task states remain `pending / in_progress / blocked / done`; check states remain
 `not_run / passed / failed / unverified`. Unverified never means passed. CLI exit codes:
-`0` success/ready, `1` failed acceptance or unmet gate, `2` invalid configuration/usage,
+`0` success/ready, `1` failed acceptance or unmet/stale gate, `2` invalid configuration,
+usage or damaged evidence,
 `130` user interruption. A report on a finished task describes historical completion;
 it cannot authorize a new completion.
 
@@ -197,15 +212,30 @@ source-fingerprint guarantees. Evidence does not automatically prove those staye
 One writer is supported; there is no multi-agent transaction or concurrent ownership
 protocol. The runtime never calls a model, sends telemetry, commits, pushes or publishes.
 
+## Optional GitHub Check Run
+
+The existing `integrations/github/` adapter is separate from the local runtime. Its example
+workflow runs project checks and publishes a Check Run only for trusted `push` events with
+`checks: write`. After configuring `commands.check`, copy `minimal-harness-check.yml` into
+your project's `.github/workflows/` and `publish_check.py` into `integrations/github/`.
+The adapter requires `GITHUB_TOKEN`, `GITHUB_REPOSITORY`
+and a full `GITHUB_SHA`; it does not turn `run check` into task acceptance evidence.
+
 ## Development checks
 
 ```bash
 python3 -m unittest discover -s tests -v
 node --test examples/todo/test.mjs
-ruff check --no-cache template/.harness tests
+ruff check --no-cache template/.harness integrations/github/publish_check.py scripts tests examples/quickstart
 python3 template/.harness/harness.py --workspace template doctor
 python3 template/.harness/harness.py --workspace examples/todo doctor
 ```
 
 CI retains Linux/macOS/Windows Python coverage and a real Chromium acceptance job. Human
 adoption validation is tracked separately; automated tests do not replace first-time users.
+
+## Security, contributing, and license
+
+Read [SECURITY.md](SECURITY.md) before reporting a vulnerability and
+[CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow. Minimal Harness is
+released under the [MIT License](LICENSE).

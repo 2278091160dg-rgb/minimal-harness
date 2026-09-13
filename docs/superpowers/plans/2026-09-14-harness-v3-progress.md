@@ -78,3 +78,28 @@ local implementation on `codex/harness-v3`, before integration and GitHub CI.
 | Real browser add/toggle/persistence and recorded completion | `tests/run_todo_walkthrough.py` |
 | Linux/macOS/Windows coverage | Retained CI matrix; remote jobs not run locally |
 | First-time human adoption | `docs/adoption-validation.md`; pending real participants |
+
+## Integration with released main
+
+The user authorized committing, pushing and opening a pull request. The initial v3
+implementation was saved as `546bfed`, then integrated with `origin/main` at `be424bd`.
+This preserves the existing MIT license, support/security guidance, optional GitHub
+adapter and reproducible release builder.
+
+- One source snapshot now binds content plus stable Git branch, HEAD and index identities;
+  staging or committing after verification requires fresh evidence. Tracked and non-ignored
+  source is covered, with mandatory Harness inputs and fixed generated-output exclusions.
+- Existing output escaping and historical evidence handling are retained. `report` and
+  `complete` share ready/stale (0/1) and damaged-evidence (2) decisions.
+- Release validation requires all three runtime modules for v3 and still rebuilds v1/v2
+  fixed refs using their original runtime shape. Generated attempts/artifacts/reports
+  are rejected in every supported archive schema.
+- First push CI passed Linux, macOS and real Chromium; two Windows fault-injection tests
+  revealed platform assumptions. The tests now distinguish startup/output threads and
+  the cleanup process, while checking actual child termination and native Job closure.
+- Final integrated local regression: Python 3.14 **208/208** (98.084s), Python 3.9
+  **208/208** (93.354s), both with strict ResourceWarning. Node 3/3, Ruff and diff checks
+  passed. Real Chromium completed all three Todo tasks and the recorded handoff loop.
+
+GitHub CI for the integrated commit is the remaining platform checkpoint. Human adoption
+testing remains separate and pending; no release or merge into `main` is performed here.
