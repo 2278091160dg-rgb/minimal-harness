@@ -9,7 +9,7 @@
 
 **Python 3.9+ 标准库 · Git · 单执行者 · 不调用模型或云服务**
 
-[第一次使用](START-HERE.zh-CN.md) · [English](README.md) ·
+[第一次使用](START-HERE.zh-CN.md) · [Codex 应用攻略](docs/codex-integration-guide.zh-CN.md) · [English](README.md) ·
 [文档索引](docs/README.zh-CN.md) · [维护者试用记录表](docs/adoption-validation.zh-CN.md)
 
 ## 为什么选择 Minimal Harness
@@ -277,6 +277,7 @@ Harness 状态的进程可以绕过它。只支持单执行者。运行时不调
 
 ## 继续阅读
 
+- [Codex × Minimal Harness 应用攻略](docs/codex-integration-guide.zh-CN.md)
 - [实战使用指南](docs/usage-guide.zh-CN.md)
 - [完整 CLI 参考](docs/cli-reference.zh-CN.md)
 - [文档索引](docs/README.zh-CN.md)

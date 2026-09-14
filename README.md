@@ -10,7 +10,7 @@ matches the current source and acceptance definition.
 
 **Python 3.9+ standard library · Git · one writer · no model API or service**
 
-[Start here](START-HERE.md) · [简体中文](README.zh-CN.md) ·
+[Start here](START-HERE.md) · [Codex integration guide](docs/codex-integration-guide.md) · [简体中文](README.zh-CN.md) ·
 [Documentation](docs/README.md) · [Maintainer trial sheet](docs/adoption-validation.md)
 
 ## Why Minimal Harness
@@ -301,6 +301,7 @@ It requires `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, and a full `GITHUB_SHA`.
 
 ## Continue reading
 
+- [Codex × Minimal Harness integration guide](docs/codex-integration-guide.md)
 - [Practical usage guide](docs/usage-guide.md)
 - [Complete CLI reference](docs/cli-reference.md)
 - [Documentation index](docs/README.md)
