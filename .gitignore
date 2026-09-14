@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .ruff_cache/
+.worktrees/
 dist/
 .DS_Store
 examples/todo/.harness/artifacts/
