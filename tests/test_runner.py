@@ -164,6 +164,44 @@ class BoundedRunnerTest(unittest.TestCase):
         self.assertEqual(100_003, log_path.stat().st_size)
         self.assertTrue(result.truncated)
 
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin zombie process-group behavior")
+    def test_cleanup_reaps_exited_leader_before_retrying_group_signal(self):
+        process = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+        try:
+            # Darwin removes an exited leader from its group before wait() reaps
+            # it. Observe that boundary without poll(), which would reap it.
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    os.getpgid(process.pid)
+                except ProcessLookupError:
+                    break
+                self.assertLess(time.monotonic(), deadline, "child never exited")
+                time.sleep(0.01)
+            self.assertIsNone(process.returncode)
+            self.runner._terminate_tree(process, None, 125)
+            self.assertEqual(0, process.returncode)
+            self.assert_process_gone(process.pid)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process-group permissions")
+    def test_cleanup_does_not_hide_permission_error_for_live_process(self):
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
+        )
+        try:
+            with mock.patch.object(self.runner.os, "killpg", side_effect=PermissionError("denied")):
+                with self.assertRaisesRegex(PermissionError, "denied"):
+                    self.runner._terminate_tree(process, None, 125)
+            self.assertIsNone(process.poll())
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+
     def test_exact_output_limit_is_not_reported_as_truncated(self):
         result, log_path = self.run_python(
             "import os, sys; os.write(sys.stdout.fileno(), b'12345')",

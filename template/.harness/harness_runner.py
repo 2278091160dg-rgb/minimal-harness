@@ -217,6 +217,16 @@ def _terminate_tree(
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        # Darwin can return EPERM for a group whose exited leader has not been
+        # reaped. Reap it, then retry so surviving descendants are still signaled.
+        # A live leader or a second permission failure remains a real error.
+        if process.poll() is None:
+            raise
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
     time.sleep(0.1)
     try:
         os.killpg(process.pid, signal.SIGKILL)
