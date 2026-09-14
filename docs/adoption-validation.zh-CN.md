@@ -16,8 +16,8 @@
 指引不会变化：
 
 ```text
-https://github.com/2278091160dg-rgb/minimal-harness/blob/DOC_COMMIT/docs/first-use-macos.zh-CN.md
-https://github.com/2278091160dg-rgb/minimal-harness/blob/DOC_COMMIT/docs/first-use-windows.zh-CN.md
+https://github.com/denggui-ai/minimal-harness/blob/DOC_COMMIT/docs/first-use-macos.zh-CN.md
+https://github.com/denggui-ai/minimal-harness/blob/DOC_COMMIT/docs/first-use-windows.zh-CN.md
 ```
 
 请三名从未使用本项目的开发者，在没有维护者指导的情况下按照对应页面试用。在记录参与者

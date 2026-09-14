@@ -2,7 +2,7 @@
 
 > 审计日期：2026-09-14
 >
-> 产品基线：[`v0.2.0-beta.2@15c3436`](https://github.com/2278091160dg-rgb/minimal-harness/tree/15c3436ae7318021e5cb18e3cfaa560df1af5e2e)
+> 产品基线：[`v0.2.0-beta.2@15c3436`](https://github.com/denggui-ai/minimal-harness/tree/15c3436ae7318021e5cb18e3cfaa560df1af5e2e)
 >
 > 结论：定位成立，但竞争力来自一组窄而完整的能力组合，不来自单项功能独占
 
@@ -46,12 +46,12 @@
 
 | 能力 | 固定证据 | 判断 |
 | --- | --- | --- |
-| 小运行时 | [Release](https://github.com/2278091160dg-rgb/minimal-harness/releases/tag/v0.2.0-beta.2) 中的 ZIP 为 145,005 bytes；Python 3.9+ 标准库，无模型 API／服务 | 成立；“minimal”应以依赖和部署边界表达，不以源码行数表达 |
-| 单任务闭环 | [README 能力地图](https://github.com/2278091160dg-rgb/minimal-harness/blob/15c3436ae7318021e5cb18e3cfaa560df1af5e2e/README.md#capability-map) 覆盖 `task add`、`next`、`verify`／`record`、`report`、`complete`、`handoff` | 成立 |
+| 小运行时 | [Release](https://github.com/denggui-ai/minimal-harness/releases/tag/v0.2.0-beta.2) 中的 ZIP 为 145,005 bytes；Python 3.9+ 标准库，无模型 API／服务 | 成立；“minimal”应以依赖和部署边界表达，不以源码行数表达 |
+| 单任务闭环 | [README 能力地图](https://github.com/denggui-ai/minimal-harness/blob/15c3436ae7318021e5cb18e3cfaa560df1af5e2e/README.md#capability-map) 覆盖 `task add`、`next`、`verify`／`record`、`report`、`complete`、`handoff` | 成立 |
 | evidence 新鲜度 | [v3 设计](../superpowers/specs/2026-09-13-evidence-freshness-and-release-design.md)和源码测试覆盖 branch、HEAD、index、tracked/non-ignored 内容、预脏状态、契约与 submodule | 成立；任何相关漂移要求重新验证 |
 | 真正运行验收 | command acceptance 由受限 runner 执行并保留原始日志；browser/manual 明确只是 observation/attestation | 成立，但不能把人工或浏览器摘要宣传为独立真实性证明 |
 | 工程验证 | [验证报告](../superpowers/reports/2026-09-14-hardening-validation.md)记录 231 项 Python 测试、Node、Ruff、三系统 CI 与真实 Chromium 流程 | 成立；三名真实新用户试用仍未完成 |
-| GitHub adapter | [`minimal-harness-check.yml`](https://github.com/2278091160dg-rgb/minimal-harness/blob/15c3436ae7318021e5cb18e3cfaa560df1af5e2e/integrations/github/minimal-harness-check.yml) 以最小权限运行 `doctor` 和 `run check`，可信 push 才发布 Check Run | 安全边界清楚，但不是 task exact-candidate completion receipt |
+| GitHub adapter | [`minimal-harness-check.yml`](https://github.com/denggui-ai/minimal-harness/blob/15c3436ae7318021e5cb18e3cfaa560df1af5e2e/integrations/github/minimal-harness-check.yml) 以最小权限运行 `doctor` 和 `run check`，可信 push 才发布 Check Run | 安全边界清楚，但不是 task exact-candidate completion receipt |
 
 ## 直接与广义替代
 

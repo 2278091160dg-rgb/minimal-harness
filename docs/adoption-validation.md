@@ -16,8 +16,8 @@ For an actual trial, replace `DOC_COMMIT` in the URL below with the merge commit
 contains the guide. This keeps the instructions fixed while the participant works:
 
 ```text
-https://github.com/2278091160dg-rgb/minimal-harness/blob/DOC_COMMIT/docs/first-use-macos.md
-https://github.com/2278091160dg-rgb/minimal-harness/blob/DOC_COMMIT/docs/first-use-windows.md
+https://github.com/denggui-ai/minimal-harness/blob/DOC_COMMIT/docs/first-use-macos.md
+https://github.com/denggui-ai/minimal-harness/blob/DOC_COMMIT/docs/first-use-windows.md
 ```
 
 Ask three developers who have not used this project to follow the selected page without

@@ -6,7 +6,7 @@ $Source = Join-Path $TrialRoot "minimal-harness-first-use-source"
 $Demo = Join-Path $TrialRoot "harness-demo"
 
 New-Item -ItemType Directory -Path $TrialRoot | Out-Null
-git clone --branch v0.2.0-beta.2 --depth 1 https://github.com/2278091160dg-rgb/minimal-harness.git $Source
+git clone --branch v0.2.0-beta.2 --depth 1 https://github.com/denggui-ai/minimal-harness.git $Source
 if ($LASTEXITCODE -ne 0) { throw "Unable to clone the fixed release tag" }
 
 New-Item -ItemType Directory -Path $Demo | Out-Null
@@ -58,7 +58,7 @@ git init
 if ($LASTEXITCODE -ne 0) { throw "release project git init failed" }
 
 $Version = "v0.2.0-beta.2"
-$Base = "https://github.com/2278091160dg-rgb/minimal-harness/releases/download/$Version"
+$Base = "https://github.com/denggui-ai/minimal-harness/releases/download/$Version"
 $Stage = Join-Path $TrialRoot "release-stage"
 New-Item -ItemType Directory -Path $Stage | Out-Null
 $Zip = Join-Path $Stage "minimal-harness-$Version.zip"

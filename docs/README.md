@@ -34,6 +34,6 @@ version labels in the README; source examples are separate from the runtime ZIP.
 [design specifications](superpowers/specs/), [research](research/) and
 [launch drafts](launch/) are dated maintainer records. They may describe earlier
 repository visibility, release state or unfinished work. Use the README and the
-current [release page](https://github.com/2278091160dg-rgb/minimal-harness/releases)
+current [release page](https://github.com/denggui-ai/minimal-harness/releases)
 for current installation choices. Historical records are not prerequisites for
 using Harness and are not all translated.

@@ -31,5 +31,5 @@
 [设计与实施计划](superpowers/plans/)、[设计规格](superpowers/specs/)、
 [研究记录](research/) 和 [发布文案草稿](launch/) 都是带日期的维护记录，可能描述
 过去的仓库可见性、发布状态或待办事项。安装时以 README 和当前
-[发行版本页面](https://github.com/2278091160dg-rgb/minimal-harness/releases) 为准。
+[发行版本页面](https://github.com/denggui-ai/minimal-harness/releases) 为准。
 这些历史资料不是使用 Harness 的前置要求，也不逐篇翻译。

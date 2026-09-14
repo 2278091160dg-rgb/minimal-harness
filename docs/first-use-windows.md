@@ -35,7 +35,7 @@ Paste the whole block into PowerShell:
 
 ```powershell
 Set-Location $HOME
-git clone --branch v0.2.0-beta.2 --depth 1 https://github.com/2278091160dg-rgb/minimal-harness.git minimal-harness-first-use-source
+git clone --branch v0.2.0-beta.2 --depth 1 https://github.com/denggui-ai/minimal-harness.git minimal-harness-first-use-source
 New-Item -ItemType Directory -Path "$HOME\harness-demo" | Out-Null
 Copy-Item -Recurse -Path "$HOME\minimal-harness-first-use-source\examples\quickstart\src","$HOME\minimal-harness-first-use-source\examples\quickstart\tests","$HOME\minimal-harness-first-use-source\examples\quickstart\greeting.task.json" -Destination "$HOME\harness-demo"
 py -3 "$HOME\minimal-harness-first-use-source\template\.harness\harness.py" --workspace "$HOME\harness-demo" init --agent generic
@@ -107,7 +107,7 @@ From the copied project root, paste this installation block:
 $ErrorActionPreference = "Stop"
 $Project = (Get-Location).Path
 $Version = "v0.2.0-beta.2"
-$Base = "https://github.com/2278091160dg-rgb/minimal-harness/releases/download/$Version"
+$Base = "https://github.com/denggui-ai/minimal-harness/releases/download/$Version"
 $Stage = Join-Path ([IO.Path]::GetTempPath()) ("minimal-harness-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $Stage | Out-Null
 $Zip = Join-Path $Stage "minimal-harness-$Version.zip"

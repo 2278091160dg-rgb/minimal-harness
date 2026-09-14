@@ -129,7 +129,7 @@ python3 template/.harness/harness.py --workspace examples/todo run check
 **Files/state:**
 
 - Git history and repository metadata
-- GitHub repository `2278091160dg-rgb/minimal-harness`
+- GitHub repository `denggui-ai/minimal-harness`
 
 1. Inspect the complete reachable Git history for credentials, private data, machine paths, generated artifacts, and unintended large files.
 2. Confirm the worktree is clean and commits contain only intended changes.

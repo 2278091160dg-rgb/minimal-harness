@@ -35,7 +35,7 @@ test ! -e "$HOME/harness-demo" && echo "demo path ready"
 
 ```bash
 cd "$HOME"
-git clone --branch v0.2.0-beta.2 --depth 1 https://github.com/2278091160dg-rgb/minimal-harness.git minimal-harness-first-use-source
+git clone --branch v0.2.0-beta.2 --depth 1 https://github.com/denggui-ai/minimal-harness.git minimal-harness-first-use-source
 mkdir harness-demo
 cp -R minimal-harness-first-use-source/examples/quickstart/src minimal-harness-first-use-source/examples/quickstart/tests minimal-harness-first-use-source/examples/quickstart/greeting.task.json harness-demo/
 python3 minimal-harness-first-use-source/template/.harness/harness.py --workspace "$HOME/harness-demo" init --agent generic
@@ -106,7 +106,7 @@ sed -n '1,160p' .harness/HANDOFF.md
 set -eu
 mh_project="$PWD"
 mh_version=v0.2.0-beta.2
-mh_base="https://github.com/2278091160dg-rgb/minimal-harness/releases/download/$mh_version"
+mh_base="https://github.com/denggui-ai/minimal-harness/releases/download/$mh_version"
 mh_stage="$(mktemp -d)"
 curl -fL "$mh_base/minimal-harness-$mh_version.zip" -o "$mh_stage/minimal-harness-$mh_version.zip"
 curl -fL "$mh_base/SHA256SUMS.txt" -o "$mh_stage/SHA256SUMS.txt"

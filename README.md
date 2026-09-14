@@ -1,7 +1,7 @@
 # Minimal Harness
 
-[![CI](https://github.com/2278091160dg-rgb/minimal-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/2278091160dg-rgb/minimal-harness/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/2278091160dg-rgb/minimal-harness)](https://github.com/2278091160dg-rgb/minimal-harness/releases)
+[![CI](https://github.com/denggui-ai/minimal-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/denggui-ai/minimal-harness/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/denggui-ai/minimal-harness)](https://github.com/denggui-ai/minimal-harness/releases)
 [![MIT License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A small, local acceptance and handoff tool for coding agents. Define what must work,
@@ -45,9 +45,9 @@ for named projects, fixed revisions, evidence levels, and current limitations.
 
 | Version | Use it for | Scope |
 | --- | --- | --- |
-| [v0.2.0-beta.2](https://github.com/2278091160dg-rgb/minimal-harness/releases/tag/v0.2.0-beta.2) | Current schema v3 prerelease | Includes `init`, `task add/revise`, `report`, source/contract freshness, Git/runner hardening, and the runtime `LICENSE`. Fresh `init` and explicit upgrades copy all four runtime files. |
-| [v0.2.0-beta.1](https://github.com/2278091160dg-rgb/minimal-harness/releases/tag/v0.2.0-beta.1) | Historical schema v3 beta | Its ZIP lacks `.harness/LICENSE` and the Git/runner hardening shipped in beta.2. Use the explicit upgrade procedure for an existing installation. |
-| [v0.1.1](https://github.com/2278091160dg-rgb/minimal-harness/releases/tag/v0.1.1) | Older stable workflow | Schema v2; no `init`, `task add/revise`, or `report`. Do not use the v3 command guide with it. |
+| [v0.2.0-beta.2](https://github.com/denggui-ai/minimal-harness/releases/tag/v0.2.0-beta.2) | Current schema v3 prerelease | Includes `init`, `task add/revise`, `report`, source/contract freshness, Git/runner hardening, and the runtime `LICENSE`. Fresh `init` and explicit upgrades copy all four runtime files. |
+| [v0.2.0-beta.1](https://github.com/denggui-ai/minimal-harness/releases/tag/v0.2.0-beta.1) | Historical schema v3 beta | Its ZIP lacks `.harness/LICENSE` and the Git/runner hardening shipped in beta.2. Use the explicit upgrade procedure for an existing installation. |
+| [v0.1.1](https://github.com/denggui-ai/minimal-harness/releases/tag/v0.1.1) | Older stable workflow | Schema v2; no `init`, `task add/revise`, or `report`. Do not use the v3 command guide with it. |
 
 This documentation describes v0.2.0-beta.2 and schema v3. Its tagged source tree also
 contains examples and the release checker; those are separate from the runtime ZIP.
@@ -64,7 +64,7 @@ macOS or Linux:
 (
 set -eu
 mh_version=v0.2.0-beta.2
-mh_base="https://github.com/2278091160dg-rgb/minimal-harness/releases/download/$mh_version"
+mh_base="https://github.com/denggui-ai/minimal-harness/releases/download/$mh_version"
 mh_stage="$(mktemp -d)"
 curl -fL "$mh_base/minimal-harness-$mh_version.zip" -o "$mh_stage/minimal-harness-$mh_version.zip"
 curl -fL "$mh_base/SHA256SUMS.txt" -o "$mh_stage/SHA256SUMS.txt"
@@ -84,7 +84,7 @@ PowerShell:
 ```powershell
 $ErrorActionPreference = "Stop"
 $Version = "v0.2.0-beta.2"
-$Base = "https://github.com/2278091160dg-rgb/minimal-harness/releases/download/$Version"
+$Base = "https://github.com/denggui-ai/minimal-harness/releases/download/$Version"
 $Stage = Join-Path ([IO.Path]::GetTempPath()) ("minimal-harness-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $Stage | Out-Null
 $Zip = Join-Path $Stage "minimal-harness-$Version.zip"
@@ -241,7 +241,7 @@ evidence, attempts, artifacts, handoff history, and agent instructions:
 (
 set -eu
 mh_source="$(mktemp -d)/minimal-harness"
-git clone --branch v0.2.0-beta.2 --depth 1 https://github.com/2278091160dg-rgb/minimal-harness.git "$mh_source"
+git clone --branch v0.2.0-beta.2 --depth 1 https://github.com/denggui-ai/minimal-harness.git "$mh_source"
 mh_project=/absolute/path/to/project
 mh_backup="$(mktemp -d)"
 cp -R "$mh_project/.harness" "$mh_backup/.harness"
@@ -260,7 +260,7 @@ project:
 ```powershell
 $ErrorActionPreference = "Stop"
 $Source = Join-Path ([IO.Path]::GetTempPath()) ("minimal-harness-source-" + [guid]::NewGuid())
-git clone --branch v0.2.0-beta.2 --depth 1 https://github.com/2278091160dg-rgb/minimal-harness.git $Source
+git clone --branch v0.2.0-beta.2 --depth 1 https://github.com/denggui-ai/minimal-harness.git $Source
 if ($LASTEXITCODE -ne 0) { throw "Minimal Harness source checkout failed with exit $LASTEXITCODE" }
 $Project = "C:\path\to\project"
 $Backup = Join-Path ([IO.Path]::GetTempPath()) ("minimal-harness-backup-" + [guid]::NewGuid())
