@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "project_name": "Minimal Harness Todo Example",
   "commands": {
     "setup": null,
@@ -18,7 +18,7 @@
     ]
   },
   "policy": {
-    "schema_version": 2,
+    "schema_version": 3,
     "max_consecutive_failures": 3,
     "allowed_paths": [
       "site/**",

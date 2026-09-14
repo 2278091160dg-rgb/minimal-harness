@@ -1,12 +1,13 @@
 # Todo example Agent instructions
 
-Before changing this example:
+<!-- minimal-harness:start -->
+## Minimal Harness workflow
 
-1. Run `python3 .harness/harness.py doctor`.
-2. Run `python3 .harness/harness.py status` and read `.harness/HANDOFF.md`.
-3. If there is no active task, run `python3 .harness/harness.py next`.
-4. Work on only the current task and only inside `policy.allowed_paths`.
+At session start run `python3 .harness/harness.py doctor` and `python3 .harness/harness.py status`, then read `.harness/HANDOFF.md`.
+Keep one task active. Define tasks with `task add --from SPEC.json`; use `task revise ID --from SPEC.json --note TEXT` for explicit changes. Do not edit runtime status or evidence fields by hand.
+Use `next` to select work, `verify` for command acceptance, and `record` for browser/manual observations. `run check` alone is not task evidence. Save browser artifacts in `.harness/artifacts/`.
+Run `report ID` to inspect readiness and evidence, and `complete ID` only after every acceptance passes against the current code and definition. An unavailable tool means `unverified`; browser/manual records are attestations.
+Respect configured allowed paths and approval operations. Stop at the configured failure limit; do not bypass a blocked task. Run `handoff` before ending the session.
+<!-- minimal-harness:end -->
 
-Use `python3 .harness/harness.py run check` for the project check. Start the page with `python3 .harness/harness.py run start`. Browser acceptance must follow the steps in the current task and be recorded with `record`; code inspection alone is not evidence, and `unverified` is not a passing result.
-
-Stop and ask the user before any operation listed in `policy.approval_required_operations`. After three consecutive failures on one check, leave the task blocked with its evidence intact. End every work round with `python3 .harness/harness.py handoff`.
+Run `python3 .harness/harness.py run check` for the Todo store checks and `python3 .harness/harness.py run start` to serve the page. Use the recorded browser walkthrough for the three acceptance tasks.

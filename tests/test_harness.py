@@ -18,11 +18,11 @@ SCRIPT = PROJECT_ROOT / "template" / ".harness" / "harness.py"
 
 def base_config():
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "project_name": "Test project",
         "commands": {"setup": None, "start": None, "check": [sys.executable, "-c", "print('ok')"]},
         "policy": {
-            "schema_version": 2,
+            "schema_version": 3,
             "max_consecutive_failures": 3,
             "allowed_paths": ["src/**", "tests/**", ".harness/**"],
             "approval_required_operations": ["delete files", "git commit or push"],
@@ -45,7 +45,7 @@ def base_tasks(check_type="command", command=None):
     else:
         acceptance["steps"] = ["Perform the action", "Observe the result"]
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "current_task_id": None,
         "tasks": [
             {
@@ -74,13 +74,13 @@ def base_tasks(check_type="command", command=None):
     }
 
 
-def v2_config():
+def v3_config():
     value = base_config()
     value["policy"]["require_git_for_completion"] = True
     return value
 
 
-def v2_tasks(check_type="command", command=None):
+def v3_tasks(check_type="command", command=None):
     return base_tasks(check_type=check_type, command=command)
 
 
@@ -100,7 +100,7 @@ def v1_tasks(check_type="command", command=None):
 
 def unavailable_git_baseline():
     return {
-        "version": 2,
+        "version": 3,
         "captured_at": "2026-09-12T00:00:00Z",
         "available": False,
         "branch": None,
@@ -109,6 +109,13 @@ def unavailable_git_baseline():
         "worktree_fingerprints": {},
         "index_fingerprints": {},
     }
+
+
+def legacy_verification_subject():
+    baseline = unavailable_git_baseline()
+    return {"version": 2, "captured_at": baseline["captured_at"],
+            "workspace_prefix": None, "git": baseline,
+            "tracked_fingerprints": {}, "ignored_fingerprints": {}}
 
 
 class HarnessCliTest(unittest.TestCase):
@@ -195,13 +202,13 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(2, result.returncode)
         self.assertIn("schema_version", result.stderr)
 
-    def test_v2_doctor_rejects_active_task_without_frozen_baselines(self):
-        self.write_json("config.json", v2_config())
-        tasks = v2_tasks(check_type="manual")
+    def test_v3_doctor_rejects_active_task_without_frozen_baselines(self):
+        self.write_json("config.json", v3_config())
+        tasks = v3_tasks(check_type="manual")
         tasks["current_task_id"] = "task-1"
         tasks["tasks"][0]["status"] = "in_progress"
         tasks["tasks"][0]["started_at"] = "2026-09-12T00:00:00Z"
-        tasks["tasks"][0]["policy_baseline"] = dict(v2_config()["policy"])
+        tasks["tasks"][0]["policy_baseline"] = dict(v3_config()["policy"])
         self.write_json("tasks.json", tasks)
 
         result = self.run_cli("doctor")
@@ -209,9 +216,9 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(2, result.returncode)
         self.assertIn("git_baseline", result.stderr)
 
-    def test_v2_doctor_rejects_impossible_blocked_state(self):
-        self.write_json("config.json", v2_config())
-        tasks = v2_tasks(check_type="manual")
+    def test_v3_doctor_rejects_impossible_blocked_state(self):
+        self.write_json("config.json", v3_config())
+        tasks = v3_tasks(check_type="manual")
         task = tasks["tasks"][0]
         tasks["current_task_id"] = "task-1"
         task["status"] = "blocked"
@@ -219,7 +226,7 @@ class HarnessCliTest(unittest.TestCase):
         task["blocked_at"] = "2026-09-12T00:01:00Z"
         task["block_reason"] = "forged"
         task["git_baseline"] = {
-            "version": 2,
+            "version": 3,
             "captured_at": "2026-09-12T00:00:00Z",
             "available": False,
             "branch": None,
@@ -228,7 +235,7 @@ class HarnessCliTest(unittest.TestCase):
             "worktree_fingerprints": {},
             "index_fingerprints": {},
         }
-        task["policy_baseline"] = dict(v2_config()["policy"])
+        task["policy_baseline"] = dict(v3_config()["policy"])
         self.write_json("tasks.json", tasks)
 
         result = self.run_cli("doctor")
@@ -236,13 +243,13 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(2, result.returncode)
         self.assertIn("failure limit", result.stderr)
 
-    def test_v2_doctor_rejects_dirty_path_missing_from_baseline_fingerprints(self):
-        tasks = v2_tasks(check_type="manual")
+    def test_v3_doctor_rejects_dirty_path_missing_from_baseline_fingerprints(self):
+        tasks = v3_tasks(check_type="manual")
         task = tasks["tasks"][0]
         tasks["current_task_id"] = task["id"]
         task["status"] = "in_progress"
         task["started_at"] = "2026-09-12T00:00:00Z"
-        task["policy_baseline"] = dict(v2_config()["policy"])
+        task["policy_baseline"] = dict(v3_config()["policy"])
         task["git_baseline"] = unavailable_git_baseline()
         task["git_baseline"].update(
             {
@@ -261,8 +268,8 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(2, result.returncode)
         self.assertIn("exactly cover dirty_paths", result.stderr)
 
-    def test_v2_doctor_rejects_passed_check_with_failure_counter(self):
-        tasks = v2_tasks(check_type="manual")
+    def test_v3_doctor_rejects_passed_check_with_failure_counter(self):
+        tasks = v3_tasks(check_type="manual")
         task = tasks["tasks"][0]
         tasks["current_task_id"] = task["id"]
         task["status"] = "in_progress"
@@ -278,8 +285,8 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(2, result.returncode)
         self.assertIn("failure counter", result.stderr)
 
-    def test_v2_doctor_rejects_failed_check_with_zero_failure_counter(self):
-        tasks = v2_tasks(check_type="manual")
+    def test_v3_doctor_rejects_failed_check_with_zero_failure_counter(self):
+        tasks = v3_tasks(check_type="manual")
         task = tasks["tasks"][0]
         tasks["current_task_id"] = task["id"]
         task["status"] = "in_progress"
@@ -295,8 +302,8 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(2, result.returncode)
         self.assertIn("positive failure counter", result.stderr)
 
-    def test_v2_doctor_requires_blocking_at_frozen_failure_limit(self):
-        tasks = v2_tasks(check_type="manual")
+    def test_v3_doctor_requires_blocking_at_frozen_failure_limit(self):
+        tasks = v3_tasks(check_type="manual")
         task = tasks["tasks"][0]
         tasks["current_task_id"] = task["id"]
         task["status"] = "in_progress"
@@ -312,8 +319,8 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(2, result.returncode)
         self.assertIn("must be blocked", result.stderr)
 
-    def test_v2_doctor_rejects_stale_block_metadata_on_active_task(self):
-        tasks = v2_tasks(check_type="manual")
+    def test_v3_doctor_rejects_stale_block_metadata_on_active_task(self):
+        tasks = v3_tasks(check_type="manual")
         task = tasks["tasks"][0]
         tasks["current_task_id"] = task["id"]
         task["status"] = "in_progress"
@@ -345,12 +352,12 @@ class HarnessCliTest(unittest.TestCase):
         migrated = self.run_cli("migrate")
 
         self.assertEqual(0, migrated.returncode, migrated.stderr)
-        self.assertEqual(2, json.loads((self.harness_dir / "config.json").read_text())["schema_version"])
-        self.assertEqual(2, self.read_tasks()["schema_version"])
+        self.assertEqual(3, json.loads((self.harness_dir / "config.json").read_text())["schema_version"])
+        self.assertEqual(3, self.read_tasks()["schema_version"])
         self.assertTrue(list((self.harness_dir / "migrations").glob("*/manifest.json")))
         repeated = self.run_cli("migrate")
         self.assertEqual(0, repeated.returncode, repeated.stderr)
-        self.assertIn("already schema v2", repeated.stdout)
+        self.assertIn("already schema v3", repeated.stdout)
 
     def test_migrate_rejects_malformed_v1_even_in_dry_run(self):
         config = v1_config()
@@ -458,8 +465,8 @@ class HarnessCliTest(unittest.TestCase):
         self.assertIn("--note", rejected.stderr)
         self.assertEqual(0, accepted.returncode, accepted.stderr)
         task = self.read_tasks()["tasks"][0]
-        self.assertEqual(2, task["git_baseline"]["version"])
-        self.assertEqual(2, task["policy_baseline"]["schema_version"])
+        self.assertEqual(3, task["git_baseline"]["version"])
+        self.assertEqual(3, task["policy_baseline"]["schema_version"])
         self.assertEqual("acknowledge v1 baseline discontinuity", task["migration_history"][-1]["note"])
 
     def test_migrate_blocked_v1_state_preserves_block_metadata_and_rebaselines(self):
@@ -481,7 +488,7 @@ class HarnessCliTest(unittest.TestCase):
         migrated = self.read_tasks()["tasks"][0]
         self.assertEqual("blocked", migrated["status"])
         self.assertEqual("three observed failures", migrated["block_reason"])
-        self.assertEqual(2, migrated["git_baseline"]["version"])
+        self.assertEqual(3, migrated["git_baseline"]["version"])
         self.assertEqual("acknowledge blocked v1 baseline", migrated["migration_history"][-1]["note"])
 
     def test_migrate_detaches_active_failed_v1_evidence_from_current_gate(self):
@@ -566,7 +573,7 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual("unverified", migrated["tasks"][0]["acceptance"][0]["status"])
         self.assertTrue(migrated["tasks"][1]["legacy_evidence"])
         self.assertIsNone(migrated["tasks"][1]["acceptance"][0]["latest_evidence"])
-        migration_dirs = list((self.harness_dir / "migrations").glob("v1-to-v2-*"))
+        migration_dirs = list((self.harness_dir / "migrations").glob("v1-to-v3-*"))
         self.assertEqual(1, len(migration_dirs))
         manifest = json.loads((migration_dirs[0] / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(
@@ -848,16 +855,17 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual("command", evidence["method"])
         self.assertEqual("passed", evidence["result"])
         self.assertEqual(3, evidence["schema_version"])
-        self.assertIn("verification_subject", evidence)
-        self.assertEqual(2, evidence["verification_subject"]["version"])
-        self.assertNotIn(str(self.workspace), json.dumps(evidence["verification_subject"]))
+        self.assertIn("source_snapshot", evidence)
+        self.assertIn("git", evidence["source_snapshot"])
+        self.assertNotIn("verification_subject", evidence)
+        self.assertNotIn(str(self.workspace), json.dumps(evidence["source_snapshot"]))
         self.assertEqual("file", evidence["log"]["type"])
         log_path = self.workspace / evidence["log"]["path"]
         self.assertIn("verified", log_path.read_text(encoding="utf-8"))
         self.assertEqual(evidence["log"]["sha256"], hashlib.sha256(log_path.read_bytes()).hexdigest())
 
     def test_complete_rejects_code_changed_after_pass(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         source = self.workspace / "src" / "feature.py"
         source.parent.mkdir()
         source.write_text("VALUE = 1\n", encoding="utf-8")
@@ -875,7 +883,7 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(before, self.read_tasks())
 
     def test_generated_harness_state_does_not_stale_evidence(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         self.initialize_git_repository()
         self.assertEqual(0, self.run_cli("next").returncode)
         self.assertEqual(0, self.run_cli("verify").returncode)
@@ -889,7 +897,7 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
 
     def test_doctor_and_handoff_report_stale_evidence_without_mutating_state(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         source = self.workspace / "src" / "feature.py"
         source.parent.mkdir()
         source.write_text("VALUE = 1\n", encoding="utf-8")
@@ -911,7 +919,7 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(before, self.read_tasks())
 
     def test_active_v2_passed_evidence_requires_reverification(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         self.initialize_git_repository()
         self.assertEqual(0, self.run_cli("next").returncode)
         self.assertEqual(0, self.run_cli("verify").returncode)
@@ -919,6 +927,8 @@ class HarnessCliTest(unittest.TestCase):
         check = tasks["tasks"][0]["acceptance"][0]
         evidence_path = self.workspace / check["latest_evidence"]
         evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence.pop("source_snapshot", None)
+        evidence["verification_subject"] = legacy_verification_subject()
         evidence["schema_version"] = 2
         evidence.pop("verification_subject")
         evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
@@ -929,12 +939,12 @@ class HarnessCliTest(unittest.TestCase):
         completed = self.run_cli("complete", "task-1")
 
         self.assertEqual(1, doctor.returncode)
-        self.assertIn("schema v2 has no verification subject", doctor.stderr)
+        self.assertIn("legacy schema v2", doctor.stderr)
         self.assertEqual(1, completed.returncode)
         self.assertIn("re-run verification", completed.stderr)
 
     def test_active_verification_subject_v1_requires_reverification(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         self.initialize_git_repository()
         self.assertEqual(0, self.run_cli("next").returncode)
         self.assertEqual(0, self.run_cli("verify").returncode)
@@ -942,6 +952,8 @@ class HarnessCliTest(unittest.TestCase):
         check = tasks["tasks"][0]["acceptance"][0]
         evidence_path = self.workspace / check["latest_evidence"]
         evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence.pop("source_snapshot", None)
+        evidence["verification_subject"] = legacy_verification_subject()
         evidence["verification_subject"]["version"] = 1
         evidence["verification_subject"].pop("tracked_fingerprints")
         evidence["verification_subject"].pop("ignored_fingerprints")
@@ -966,6 +978,8 @@ class HarnessCliTest(unittest.TestCase):
         check = tasks["tasks"][0]["acceptance"][0]
         evidence_path = self.workspace / check["latest_evidence"]
         evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence.pop("source_snapshot", None)
+        evidence["verification_subject"] = legacy_verification_subject()
         evidence["schema_version"] = 2
         evidence.pop("verification_subject")
         evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
@@ -982,7 +996,7 @@ class HarnessCliTest(unittest.TestCase):
         self.assertIn("legacy evidence", handoff)
 
     def test_completed_verification_subject_v1_remains_readable_as_legacy(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         self.initialize_git_repository()
         self.assertEqual(0, self.run_cli("next").returncode)
         self.assertEqual(0, self.run_cli("verify").returncode)
@@ -991,6 +1005,8 @@ class HarnessCliTest(unittest.TestCase):
         check = tasks["tasks"][0]["acceptance"][0]
         evidence_path = self.workspace / check["latest_evidence"]
         evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence.pop("source_snapshot", None)
+        evidence["verification_subject"] = legacy_verification_subject()
         evidence["verification_subject"]["version"] = 1
         evidence["verification_subject"].pop("tracked_fingerprints")
         evidence["verification_subject"].pop("ignored_fingerprints")
@@ -1016,6 +1032,8 @@ class HarnessCliTest(unittest.TestCase):
         check = task["acceptance"][0]
         evidence_path = self.workspace / check["latest_evidence"]
         evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence.pop("source_snapshot", None)
+        evidence["verification_subject"] = legacy_verification_subject()
         evidence["schema_version"] = 1
         evidence.pop("verification_subject")
         evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
@@ -1042,11 +1060,11 @@ class HarnessCliTest(unittest.TestCase):
         self.assertIn("not Git-bound by policy", completed.stdout)
 
     def test_config_change_after_pass_stales_evidence(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         self.initialize_git_repository()
         self.assertEqual(0, self.run_cli("next").returncode)
         self.assertEqual(0, self.run_cli("verify").returncode)
-        config = v2_config()
+        config = v3_config()
         config["project_name"] = "Changed after verification"
         self.write_json("config.json", config)
 
@@ -1057,7 +1075,7 @@ class HarnessCliTest(unittest.TestCase):
         self.assertIn(".harness/config.json", result.stderr)
 
     def test_harness_runtime_change_after_pass_stales_evidence(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         runtime = self.harness_dir / "harness.py"
         runtime.write_text("VERSION = 1\n", encoding="utf-8")
         self.initialize_git_repository()
@@ -1072,7 +1090,7 @@ class HarnessCliTest(unittest.TestCase):
         self.assertIn(".harness/harness.py", result.stderr)
 
     def test_malformed_verification_subject_is_integrity_error_for_doctor(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         self.initialize_git_repository()
         self.assertEqual(0, self.run_cli("next").returncode)
         self.assertEqual(0, self.run_cli("verify").returncode)
@@ -1080,6 +1098,8 @@ class HarnessCliTest(unittest.TestCase):
         check = tasks["tasks"][0]["acceptance"][0]
         evidence_path = self.workspace / check["latest_evidence"]
         evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence.pop("source_snapshot", None)
+        evidence["verification_subject"] = legacy_verification_subject()
         evidence["verification_subject"]["version"] = 99
         evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
         check["latest_evidence_sha256"] = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
@@ -1093,8 +1113,8 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(2, completed.returncode)
         self.assertIn("valid evidence", completed.stderr)
 
-    def test_ignored_file_created_after_pass_stales_evidence(self):
-        self.write_json("config.json", v2_config())
+    def test_ignored_file_created_after_pass_does_not_stale_evidence(self):
+        self.write_json("config.json", v3_config())
         (self.workspace / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
         self.initialize_git_repository()
         self.assertEqual(0, self.run_cli("next").returncode)
@@ -1103,12 +1123,11 @@ class HarnessCliTest(unittest.TestCase):
 
         result = self.run_cli("complete", "task-1")
 
-        self.assertEqual(1, result.returncode)
-        self.assertIn("stale evidence", result.stderr)
-        self.assertIn("ignored.py", result.stderr)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotIn("stale evidence", result.stderr)
 
-    def test_ignored_file_edit_after_pass_stales_evidence(self):
-        self.write_json("config.json", v2_config())
+    def test_ignored_file_edit_after_pass_does_not_stale_evidence(self):
+        self.write_json("config.json", v3_config())
         (self.workspace / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
         ignored = self.workspace / "ignored.py"
         ignored.write_text("SECRET = 1\n", encoding="utf-8")
@@ -1119,12 +1138,11 @@ class HarnessCliTest(unittest.TestCase):
 
         result = self.run_cli("complete", "task-1")
 
-        self.assertEqual(1, result.returncode)
-        self.assertIn("stale evidence", result.stderr)
-        self.assertIn("ignored.py", result.stderr)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotIn("stale evidence", result.stderr)
 
     def test_assume_unchanged_file_edit_after_pass_stales_evidence(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         source = self.workspace / "src" / "feature.py"
         source.parent.mkdir()
         source.write_text("VALUE = 1\n", encoding="utf-8")
@@ -1145,7 +1163,7 @@ class HarnessCliTest(unittest.TestCase):
         self.assertIn("src/feature.py", result.stderr)
 
     def test_skip_worktree_file_edit_after_pass_stales_evidence(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         source = self.workspace / "src" / "feature.py"
         source.parent.mkdir()
         source.write_text("VALUE = 1\n", encoding="utf-8")
@@ -1166,7 +1184,7 @@ class HarnessCliTest(unittest.TestCase):
         self.assertIn("src/feature.py", result.stderr)
 
     def test_empty_commit_after_pass_stales_evidence(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         self.initialize_git_repository()
         self.assertEqual(0, self.run_cli("next").returncode)
         self.assertEqual(0, self.run_cli("verify").returncode)
@@ -1184,7 +1202,7 @@ class HarnessCliTest(unittest.TestCase):
         self.assertIn("HEAD changed", result.stderr)
 
     def test_net_zero_commit_history_after_pass_stales_evidence(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         source = self.workspace / "feature.py"
         source.write_text("VALUE = 1\n", encoding="utf-8")
         self.initialize_git_repository()
@@ -1215,7 +1233,7 @@ class HarnessCliTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "backslash is a path separator on Windows")
     def test_literal_backslash_filename_changed_after_pass_stales_evidence(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         self.initialize_git_repository()
         source = self.workspace / "pre\\dirty.py"
         source.write_text("VALUE = 1\n", encoding="utf-8")
@@ -1231,7 +1249,7 @@ class HarnessCliTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "control characters are not portable filenames on Windows")
     def test_handoff_escapes_control_and_markdown_characters_in_git_paths(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         self.initialize_git_repository()
         self.assertEqual(0, self.run_cli("next").returncode)
         self.assertEqual(0, self.run_cli("verify").returncode)
@@ -1247,7 +1265,7 @@ class HarnessCliTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "control characters are not portable filenames on Windows")
     def test_complete_escapes_terminal_control_characters_in_git_paths(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         self.initialize_git_repository()
         self.assertEqual(0, self.run_cli("next").returncode)
         self.assertEqual(0, self.run_cli("verify").returncode)
@@ -1262,7 +1280,7 @@ class HarnessCliTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX permissions and control filenames are required")
     def test_git_fingerprint_error_escapes_path_and_os_error_controls(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         self.initialize_git_repository()
         malicious = self.workspace / "evil\nFORGED-DIAGNOSTIC\x1b[31m.py"
         malicious.write_text("payload\n", encoding="utf-8")
@@ -1296,7 +1314,7 @@ class HarnessCliTest(unittest.TestCase):
         )
 
     def test_complete_rejects_staged_change_after_pass(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         source = self.workspace / "src" / "feature.py"
         source.parent.mkdir()
         source.write_text("VALUE = 1\n", encoding="utf-8")
@@ -1313,7 +1331,7 @@ class HarnessCliTest(unittest.TestCase):
         self.assertIn("src/feature.py", result.stderr)
 
     def test_complete_rejects_committed_change_after_pass_when_git_is_required(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         source = self.workspace / "src" / "feature.py"
         source.parent.mkdir()
         source.write_text("VALUE = 1\n", encoding="utf-8")
@@ -1336,7 +1354,7 @@ class HarnessCliTest(unittest.TestCase):
         self.assertIn("src/feature.py", result.stderr)
 
     def test_complete_rejects_renamed_file_after_pass(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         source = self.workspace / "src" / "before.py"
         source.parent.mkdir()
         source.write_text("VALUE = 1\n", encoding="utf-8")
@@ -1357,7 +1375,7 @@ class HarnessCliTest(unittest.TestCase):
         )
 
     def test_complete_rejects_deleted_file_after_pass(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         source = self.workspace / "src" / "feature.py"
         source.parent.mkdir()
         source.write_text("VALUE = 1\n", encoding="utf-8")
@@ -1373,7 +1391,7 @@ class HarnessCliTest(unittest.TestCase):
         self.assertIn("src/feature.py", result.stderr)
 
     def test_complete_rejects_second_edit_to_preexisting_dirty_file_after_pass(self):
-        self.write_json("config.json", v2_config())
+        self.write_json("config.json", v3_config())
         self.initialize_git_repository()
         source = self.workspace / "src" / "feature.py"
         source.parent.mkdir()
@@ -1746,7 +1764,7 @@ class HarnessCliTest(unittest.TestCase):
             capture_output=True,
             check=True,
         ).stdout
-        self.assertIn("Snapshot schema: 2", handoff)
+        self.assertIn("Snapshot schema: 3", handoff)
         self.assertIn("excluding generated .harness/HANDOFF.md", handoff)
         self.assertIn(".harness/HANDOFF.md", actual)
 
@@ -2009,7 +2027,8 @@ class HarnessCliTest(unittest.TestCase):
         result = self.run_cli("next")
 
         self.assertEqual(2, result.returncode)
-        self.assertIn("non-regular dirty path", result.stderr)
+        self.assertIn("dirty submodule", result.stderr)
+        self.assertIn("vendor/submodule", result.stderr)
 
     def test_complete_rejects_submodule_dirtied_after_pass(self):
         source_dir = (
@@ -2061,7 +2080,7 @@ class HarnessCliTest(unittest.TestCase):
         result = self.run_cli("complete", "task-1")
 
         self.assertEqual(1, result.returncode)
-        self.assertIn("cannot fingerprint non-regular dirty path", result.stderr)
+        self.assertIn("dirty submodule", result.stderr)
         self.assertIn("vendor/submodule", result.stderr)
 
     def test_allowed_paths_single_star_does_not_cross_directory_separator(self):
@@ -2237,12 +2256,6 @@ class HarnessCliTest(unittest.TestCase):
         self.write_json("tasks.json", base_tasks(check_type="manual"))
         self.initialize_git_repository()
         self.assertEqual(0, self.run_cli("next").returncode)
-        self.assertEqual(
-            0,
-            self.run_cli(
-                "record", "task-1", "check-1", "--result", "passed", "--summary", "verified",
-            ).returncode,
-        )
         source = self.workspace / "src" / "feature.txt"
         source.parent.mkdir()
         source.write_text("allowed", encoding="utf-8")
@@ -2253,6 +2266,13 @@ class HarnessCliTest(unittest.TestCase):
             check=True,
             text=True,
             capture_output=True,
+        )
+
+        self.assertEqual(
+            0,
+            self.run_cli(
+                "record", "task-1", "check-1", "--result", "passed", "--summary", "verified",
+            ).returncode,
         )
 
         result = self.run_cli("complete", "task-1")

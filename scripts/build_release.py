@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import io
+import json
 import os
 import re
 import subprocess
@@ -17,7 +18,15 @@ VERSION_PATTERN = re.compile(
     r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
     r"(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?"
 )
-FORBIDDEN_PARTS = {"__pycache__", "evidence", "logs", "migrations"}
+REQUIRED_FILES = {
+    ".harness/harness.py",
+    ".harness/config.json",
+    ".harness/tasks.json",
+}
+V3_RUNTIME_FILES = {".harness/harness_init.py", ".harness/harness_runner.py"}
+FORBIDDEN_PARTS = {
+    "__pycache__", "evidence", "logs", "migrations", "attempts", "artifacts", "reports",
+}
 
 
 def parse_args(argv=None):
@@ -45,11 +54,22 @@ def validate_archive(payload):
     try:
         with zipfile.ZipFile(io.BytesIO(payload)) as package:
             file_names = [name for name in package.namelist() if not name.endswith("/")]
+            missing = REQUIRED_FILES.difference(file_names)
+            if missing:
+                raise ValueError("archive is missing required files: " + ", ".join(sorted(missing)))
+            config = json.loads(package.read(".harness/config.json"))
     except (OSError, zipfile.BadZipFile) as exc:
         raise ValueError(f"Git produced an invalid ZIP archive: {exc}") from exc
 
-    if ".harness/harness.py" not in file_names:
-        raise ValueError("archive is missing .harness/harness.py")
+    if not isinstance(config, dict):
+        raise ValueError("archive config must be a JSON object")
+    schema = config.get("schema_version", 1)
+    if type(schema) is not int or schema not in (1, 2, 3):
+        raise ValueError(f"archive config has unsupported schema_version: {schema!r}")
+    if schema == 3:
+        missing = V3_RUNTIME_FILES.difference(file_names)
+        if missing:
+            raise ValueError("archive is missing required files: " + ", ".join(sorted(missing)))
     for name in file_names:
         path = Path(name)
         if not name.startswith(".harness/") or FORBIDDEN_PARTS.intersection(path.parts):

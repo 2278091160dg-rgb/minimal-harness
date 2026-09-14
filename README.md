@@ -1,287 +1,249 @@
 # Minimal Harness
 
-[English](README.md) | [简体中文](README.zh-CN.md)
-
 [![CI](https://github.com/2278091160dg-rgb/minimal-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/2278091160dg-rgb/minimal-harness/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/2278091160dg-rgb/minimal-harness)](https://github.com/2278091160dg-rgb/minimal-harness/releases/latest)
-[![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue)](https://www.python.org/)
 [![MIT License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Minimal, dependency-free, fail-closed completion proof layer for coding agents.**
+A small, local acceptance and handoff tool for coding agents. Define what must work,
+run the checks, keep evidence, and only complete a task while that evidence matches
+both the current source and the agreed acceptance definition.
 
-Minimal Harness is a repository-local acceptance kernel for Codex, Claude Code,
-GitHub Copilot, and other coding agents. It connects task state, real
-verification, tamper-evident evidence, Git scope, completion gates, and
-cross-session handoff in one inspectable workflow.
+**Python 3.9+ standard library · Git · one writer · no model API or service**
 
-It does not call an AI model and does not assume that “the code was written”
-means “the task is complete.”
+[中文说明](README.zh-CN.md) · [First-time user validation](docs/adoption-validation.md)
 
-## 30-second install
+## Downloads and versions
 
-### macOS and Linux
+[Release downloads](https://github.com/2278091160dg-rgb/minimal-harness/releases) include
+runtime ZIPs and `SHA256SUMS.txt`. This README describes the schema v3 beta,
+[v0.2.0-beta.1](https://github.com/2278091160dg-rgb/minimal-harness/releases/tag/v0.2.0-beta.1).
+The stable v0.1.1 workflow predates `init`, `task add/revise` and `report`.
+
+For a new installation, verify the ZIP against `SHA256SUMS.txt` and extract it into a
+separate directory. Run its `.harness/harness.py --workspace /path/to/project init
+--agent codex` with Python 3.9+ to create empty task state and connect your agent.
+The runtime ZIP does not include examples; use the source walkthrough below for those.
+For an existing installation, follow the explicit migration steps below, preserving
+your configuration, tasks, agent instructions and historical evidence. Do not extract
+the ZIP over an existing project's `.harness/` directory.
+
+## Try a complete task
+
+Clone this repository and create a disposable project (if already downloaded, start
+from the repository root at `mkdir`):
 
 ```bash
-curl -fLO https://github.com/2278091160dg-rgb/minimal-harness/releases/download/v0.1.1/minimal-harness-v0.1.1.zip
-python3 -m zipfile -e minimal-harness-v0.1.1.zip .
+git clone https://github.com/2278091160dg-rgb/minimal-harness.git
+cd minimal-harness
+mkdir ../harness-demo
+cp -R examples/quickstart/src examples/quickstart/tests examples/quickstart/greeting.task.json ../harness-demo/
+python3 template/.harness/harness.py --workspace ../harness-demo init --agent codex
+cd ../harness-demo
+git init
 python3 .harness/harness.py doctor
+python3 .harness/harness.py task add --from greeting.task.json
+python3 .harness/harness.py next
+python3 .harness/harness.py verify
+python3 .harness/harness.py report greeting
+python3 .harness/harness.py complete greeting
+python3 .harness/harness.py handoff
 ```
 
-### Windows PowerShell
+The check invokes the actual greeting CLI with and without a name. Expect both behaviors
+to pass, a ready report, and a completed task recorded in `.harness/HANDOFF.md`.
+Git does not need an initial commit for this example. To see stale-evidence rejection,
+change `Hello` to `Hi` in `src/greet.py` **after verify and before complete**: the report
+and completion must reject the old result. Restore the behavior and run `verify` again.
+
+PowerShell setup (then run the same `doctor` → `handoff` commands using `py -3`):
 
 ```powershell
-Invoke-WebRequest https://github.com/2278091160dg-rgb/minimal-harness/releases/download/v0.1.1/minimal-harness-v0.1.1.zip -OutFile minimal-harness-v0.1.1.zip
-py -3 -m zipfile -e minimal-harness-v0.1.1.zip .
-py -3 .harness/harness.py doctor
+New-Item -ItemType Directory ..\harness-demo
+Copy-Item -Recurse examples\quickstart\src, examples\quickstart\tests, examples\quickstart\greeting.task.json ..\harness-demo\
+py -3 template/.harness/harness.py --workspace ../harness-demo init --agent codex
+Set-Location ..\harness-demo
+git init
 ```
 
-The archive expands directly to `.harness/`. Edit `.harness/config.json`
-and `.harness/tasks.json` for your project, then begin the workflow below.
-The release also includes `SHA256SUMS.txt` for download verification.
+Use `--agent claude` for `CLAUDE.md`, `--agent generic` for generic `AGENTS.md` guidance,
+or omit `--agent` to install only the runtime. `init --dry-run` previews the changes.
+Existing instructions are preserved and a managed block is appended once. Conflicting
+blocks, partial installs, symlink targets, and different installed runtimes are rejected.
+`init` does not upgrade an existing installation or overwrite its tasks/configuration.
 
-## What it can prove
+## Use it in your project
 
-| Capability | What it establishes |
-| --- | --- |
-| Agent-neutral, repository-local operation | The same checked-in workflow can be called by different coding agents. |
-| Deterministic task lifecycle | Tasks move through `pending`, `in_progress`, `blocked`, and `done` under explicit rules. |
-| Strict v1 → v2 migration | Active legacy tasks receive a new baseline instead of silently inheriting incomplete state. |
-| Git-bound scope audit | Branch, HEAD, index, worktree, tracked/ignored files, and allowed paths are checked fail closed. |
-| Bound evidence | Evidence JSON, logs, and artifacts carry size and SHA-256 metadata plus a Git verification subject. |
-| Three acceptance modes | Commands are executed directly; browser results require a tool and artifact; manual results remain labeled attestations. |
-| Fail-closed completion | Missing, stale, tampered, or uncertain Git/evidence state blocks `complete`. |
-| Verifiable handoff | `HANDOFF.md` reports current task state, trusted evidence, warnings, and the next command. |
-| Portable runtime | The core uses only the Python 3.9+ standard library on Linux, macOS, and Windows. |
-| Optional GitHub reporting | A separate adapter can publish trusted results as a GitHub Check Run. |
-
-## Minimal workflow
+Initialize from this checkout with the global `--workspace PATH` **before** the command:
 
 ```bash
-# 1. Inspect the repository and select one task.
-python3 .harness/harness.py doctor
-python3 .harness/harness.py status
-python3 .harness/harness.py next
-
-# 2. Do the work, then run command acceptance checks.
-python3 .harness/harness.py verify
-
-# 3. Record browser or manual acceptance when required.
-python3 .harness/harness.py record TASK_ID CHECK_ID \
-  --result passed \
-  --summary "What was executed and observed" \
-  --tool browser \
-  --artifact proof/screenshot.png
-
-# 4. Complete only after every gate passes.
-python3 .harness/harness.py complete TASK_ID
-
-# 5. Generate the next-session handoff.
-python3 .harness/harness.py handoff
+python3 template/.harness/harness.py --workspace /path/to/project init --agent codex
 ```
 
-A typical first minute looks like this:
+Before selecting a task, configure `.harness/config.json`:
 
-```text
-$ python3 .harness/harness.py doctor
-OK: configuration valid (1 tasks)
-OK: Git branch=main HEAD=<commit>
+- Set `policy.allowed_paths` to the files this task may change. Defaults are `src/**`,
+  `tests/**`, and `.harness/**`; root-level application files need explicit patterns.
+- Set optional `commands.setup/start/check` to argv arrays, or leave them `null`.
+- `{python}` in argv resolves to the interpreter running Harness. No command uses a shell.
+- `*` matches one path segment; `**` crosses directories. Git is required for completion
+  by default. Initialization neither creates a Git repository nor changes its history.
 
-$ python3 .harness/harness.py next
-Selected T1: <task title>
+Write a **definition-only** JSON file, without status, counters, or evidence hashes:
 
-$ python3 .harness/harness.py status
-Project: <project name>
-Current task: T1
-- T1 [in_progress]: <task title>
+```json
+{
+  "id": "greeting",
+  "title": "Greet a named user and support the default name",
+  "acceptance": [{
+    "id": "greeting-cli",
+    "type": "command",
+    "instruction": "Named and default greetings match the expected CLI output.",
+    "command": ["{python}", "tests/check_greeting.py"],
+    "timeout_seconds": 30
+  }]
+}
 ```
 
-## Why not just CI?
-
-CI answers whether commands passed for a revision. Minimal Harness additionally
-binds those results to a task lifecycle, the task's starting Git state, allowed
-paths, artifacts, evidence freshness, and the final completion decision. It
-also preserves a trustworthy handoff between agent sessions.
-
-Minimal Harness is an independent CLI acceptance kernel. It is **not**:
-
-- a Codex Skill or agent orchestrator;
-- an operating-system sandbox or permission system;
-- a service that automatically commits or pushes changes;
-- cryptographic proof that a human manual statement is truthful.
-
-Use a container, virtual machine, restricted account, or platform permissions
-when executing untrusted code.
-
-## Configuration and task model
-
-`.harness/config.json` and `.harness/tasks.json` use schema v2.
-
-- `commands.setup/start/check` must be argv arrays or `null`; no shell is
-  inserted.
-- `{python}` safely expands to the interpreter running Harness.
-- `policy.allowed_paths` uses path-segment glob semantics: `*` matches one
-  segment and `**` may cross directories.
-- `policy.require_git_for_completion` defaults to `true`.
-- `approval_required_operations` documents agent/human process boundaries;
-  it does not intercept operating-system calls.
-
-Acceptance types:
-
-- `command`: executed directly by Harness.
-- `browser`: executed with a real browser; a passed result requires
-  `--tool` and at least one regular, non-symlink artifact.
-- `manual`: a clearly labeled human or external-tool attestation; an
-  attachment is optional.
-
-Harness exit codes are `0` for success, `1` for an acceptance or workflow
-gate, `2` for configuration/usage errors, and `130` for user interruption.
-
-## Migrating from v1
-
-Preview before changing state:
+`task add --from SPEC.json` generates runtime fields. Start with `next`. After selection,
+the acceptance definition and edit policy are frozen. To change the requirement explicitly:
 
 ```bash
-python3 .harness/harness.py migrate --dry-run
-python3 .harness/harness.py migrate
+python3 .harness/harness.py task revise greeting --from .harness/specs/revised.task.json --note "Explain the requirement change"
 ```
 
-An active or blocked v1 task needs an explicit checkpoint note because the old
-index baseline cannot be proven:
+Revision requires the same task ID, preserves the task's Git/policy starting point and
+invalidates previous evidence. Completed tasks cannot be revised. Blocked tasks require
+`unblock ID --note TEXT` first; revision cannot bypass a blocker. Do not hand-edit runtime
+status or hash fields. A passing command is only as useful as the behavior it checks:
+Harness does not decide whether your acceptance criteria are sufficient.
+
+Keep new revision specifications inside an allowed path such as `.harness/specs/`.
+Creating or editing a specification outside the frozen edit scope is still an out-of-scope
+change; `task revise` does not expand permission to edit other files.
+
+## Checks, reports, and recovery
+
+- **`verify [ID]`** runs command acceptance and records evidence. Default limit: 300 seconds
+  per command and 10 MiB of raw log bytes; positive `timeout_seconds` can override time.
+  Timeout and output-limit failures retain the bounded partial log. Interruptions leave
+  the check unverified, even if an earlier attempt passed.
+- **`run check`** runs the configured project check but **does not record task acceptance**.
+  `run setup` and `run start` are project helpers; `start` remains long-running.
+- **`report ID --format text|json|markdown`** is a read-only completion preflight. It shows
+  each check, evidence source, blockers/staleness and the next command. It shares the
+  completion auditor with `complete`; output is stdout, with no automatic uploads.
+- **`complete ID`** requires passing current checks, intact evidence, unchanged acceptance
+  definitions and source content, and a successful Git scope audit.
+- **`handoff`** writes the generated session summary. Start a new session with `doctor`,
+  `status`, and `.harness/HANDOFF.md`. Follow the configured failure threshold; defaults
+  block a task after three consecutive failures of one check.
+
+For command verification, source and acceptance digests must match before and after the
+run. Completion recalculates them. Git branch, HEAD and index identity are also bound:
+staging changes or creating a commit after verification requires another verification.
+Generated runtime state, evidence, attempts, legacy `.harness/logs/`, migration
+archives, managed `.harness/artifacts/`, reports, HANDOFF and the runtime's
+`.harness/__pycache__/` are fixed exclusions. Git-tracked and non-ignored files are checked;
+Harness code and configuration are checked even when `.harness/` is ignored. Do not store
+application code in these reserved output locations. Modification time alone does not
+invalidate a result. Initialized, clean Git submodules are included recursively; dirty or
+uninitialized submodules and hidden index flags stop verification with a diagnostic.
+
+Task states remain `pending / in_progress / blocked / done`; check states remain
+`not_run / passed / failed / unverified`. Unverified never means passed. CLI exit codes:
+`0` success/ready, `1` failed acceptance or unmet/stale gate, `2` invalid configuration,
+usage or damaged evidence,
+`130` user interruption. A report on a finished task describes historical completion;
+it cannot authorize a new completion.
+
+## Browser and manual acceptance
+
+A browser definition uses `type: "browser"`, an instruction, and a non-empty `steps` array.
+Perform the actual actions with your browser tool and save artifacts under the reserved
+`.harness/artifacts/` directory. Then record the observation:
 
 ```bash
-python3 .harness/harness.py migrate \
-  --note "Confirmed restart from the current Git state"
+python3 .harness/harness.py record TASK_ID CHECK_ID --result passed \
+  --summary "Describe the actions and observed result" \
+  --tool playwright --artifact .harness/artifacts/screenshot.png
 ```
 
-Migration snapshots the original v1 files and their hashes under
-`.harness/migrations/`. It does not rewrite historical evidence. Passed v1
-checks on unfinished tasks become `unverified`; completed tasks remain
-readable and are labeled as legacy evidence. Re-running migration is safe.
+A browser pass requires a tool name and a real, non-symlink workspace artifact. Manual
+checks accept a non-empty observation; attachments are optional. Both are **attestations
+at recording time**, not independent proof that a screenshot or human statement is true.
+Unavailable tools must be recorded as `unverified` with an explanation.
 
-## Git baseline and scope
-
-`next` selects only the first pending task and freezes:
-
-- branch, HEAD, unborn state, worktree and index fingerprints;
-- tracked and ignored file fingerprints, including Git flags;
-- the allowed-path, failure-threshold, approval, and Git-completion policies.
-
-An active or blocked task prevents selecting another task. Existing dirty
-regular files are fingerprinted so later edits cannot hide behind old dirt.
-Unfingerprintable dirty objects, including unsafe submodule states, prevent an
-incomplete baseline from being created.
-
-Every Git subprocess is checked. Once a repository is recognized, uncertainty
-reading status, branch, HEAD, index, tracked/ignored files, or submodules
-blocks completion.
-
-## Evidence and freshness
+The Todo example exercises add, toggle, and persistence with real Chromium. This helper
+creates a disposable Git project, starts its own local server, and runs the complete loop:
 
 ```bash
-# Run all command checks for the active task.
-python3 .harness/harness.py verify
-
-# Record an unavailable capability without pretending it passed.
-python3 .harness/harness.py record TASK_ID CHECK_ID \
-  --result unverified \
-  --summary "This agent session has no browser tool"
+# From this repository. Optional developer dependency; not a Harness runtime dependency.
+python3 -m pip install playwright
+python3 -m playwright install chromium
+python3 tests/run_todo_walkthrough.py
 ```
 
-Each result creates a non-overwriting schema v3 evidence JSON file. Command
-output is stored as raw bytes; terminal display uses UTF-8 replacement
-decoding. Evidence JSON, logs, and artifacts record path, type, size, and
-SHA-256.
+The helper prints the directory containing screenshots, evidence and the final handoff,
+then stops its server. Port 8000 must be free. The shipped example stays unchanged.
+For a server you started yourself, `tests/todo_browser_acceptance.py --workspace PATH
+--record` records into that workspace; omit `--record` for browser-only regression.
+That lower-level script accepts `HARNESS_CDP_URL` for a dedicated Chromium instance;
+the disposable helper always starts an isolated headless browser.
 
-Passed evidence also stores the Git verification subject at the moment of
-verification. A later relevant file, index, branch, HEAD, ignored-file,
-submodule, or Git-history change makes that evidence stale and requires
-`verify` or `record` again.
+## Upgrade from v1 or v2
 
-Freshness ignores only Harness-generated mutable state:
-`tasks.json`, `evidence/**`, `logs/**`, `HANDOFF.md`, and
-`migrations/**`. The runtime, config, adapters, and project files are still
-covered.
-
-After the configured failure threshold blocks a task, a person can reset the
-current gate while retaining historical evidence:
+Back up your installation, then replace only `harness.py`, `harness_init.py`, and
+`harness_runner.py` from `template/.harness/`. Keep your configuration, tasks and evidence.
+Preview and explicitly migrate:
 
 ```bash
-python3 .harness/harness.py unblock TASK_ID --note "What was resolved"
+python3 .harness/harness.py migrate --dry-run --note "Acknowledge the current acceptance definition for v3"
+python3 .harness/harness.py migrate --note "Acknowledge the current acceptance definition for v3"
 ```
 
-## Cross-session handoff
+Migration archives the old state and preserves historical evidence. Old passing evidence
+cannot acquire source/contract bindings retroactively: unfinished tasks must reverify.
+Existing v2 Git/policy baselines and blocking counters survive; completed legacy tasks
+are labeled historical, not v3 verified. Active or blocked v1 tasks require an explicit
+note and receive a new Git baseline; their old baselines are retained as history.
+Repeated migration is safe; there is no silent upgrade.
 
-```bash
-python3 .harness/harness.py handoff
-```
+## Trust and scope
 
-`.harness/HANDOFF.md` records the schema, snapshot time, active acceptance
-state, validated evidence, historical failures, Git state, scope warnings, and
-the next command. Invalid evidence is shown as an error, never as a trusted
-summary. The generated handoff file excludes itself from its worktree section.
+This is a local workflow tool for a cooperating agent and developer. It is not an OS
+sandbox or independent anti-forgery service. Allowed paths are audited at completion;
+approval-operation settings are workflow instructions, not syscall interception. A caller
+with write access to the runtime and state can bypass it. Ignored dependencies, external
+services, environment changes and the quality of the acceptance definition are outside
+source-fingerprint guarantees. Evidence does not automatically prove those stayed fixed.
 
-Adapter snippets for agent instruction files live in
-`template/.harness/adapters/`.
-
-## Runnable Todo example
-
-```bash
-python3 template/.harness/harness.py --workspace examples/todo doctor
-python3 template/.harness/harness.py --workspace examples/todo run check
-python3 template/.harness/harness.py --workspace examples/todo run start
-```
-
-Open `http://127.0.0.1:8000`, then test adding, completing, and refreshing a
-todo. You can also run Harness from inside the example:
-
-```bash
-cd examples/todo
-python3 .harness/harness.py doctor
-python3 .harness/harness.py status
-```
+One writer is supported; there is no multi-agent transaction or concurrent ownership
+protocol. The runtime never calls a model, sends telemetry, commits, pushes or publishes.
 
 ## Optional GitHub Check Run
 
-`integrations/github/` contains a standard-library adapter and example
-workflow. It runs doctor/check in ordinary CI and publishes a Check Run only
-for trusted `push` events with `checks: write`:
+The existing `integrations/github/` adapter is separate from the local runtime. Its example
+workflow runs project checks and publishes a Check Run only for trusted `push` events with
+`checks: write`. After configuring `commands.check`, copy `minimal-harness-check.yml` into
+your project's `.github/workflows/` and `publish_check.py` into `integrations/github/`.
+The adapter requires `GITHUB_TOKEN`, `GITHUB_REPOSITORY`
+and a full `GITHUB_SHA`; it does not turn `run check` into task acceptance evidence.
 
-```bash
-mkdir -p .github/workflows
-cp integrations/github/minimal-harness-check.yml .github/workflows/
-```
-
-The adapter requires `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, and a full
-`GITHUB_SHA`. It rejects cross-host redirects rather than forwarding
-Authorization. See the official [Check Runs REST API](https://docs.github.com/en/rest/checks/runs)
-and [GitHub Actions fork permission boundary](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#changing-the-permissions-in-a-forked-repository).
-
-## Development
+## Development checks
 
 ```bash
 python3 -m unittest discover -s tests -v
 node --test examples/todo/test.mjs
-python3 -m pip install ruff==0.15.12
-ruff check --no-cache template/.harness/harness.py integrations/github/publish_check.py scripts tests
+ruff check --no-cache template/.harness integrations/github/publish_check.py scripts tests examples/quickstart
 python3 template/.harness/harness.py --workspace template doctor
 python3 template/.harness/harness.py --workspace examples/todo doctor
-python3 template/.harness/harness.py --workspace examples/todo run check
 ```
 
-Real browser regression uses Playwright and Chromium for development acceptance
-only; they are not Harness runtime dependencies.
-
-```bash
-python3 template/.harness/harness.py --workspace examples/todo run start
-python3 tests/todo_browser_acceptance.py
-```
-
-Set `HARNESS_CDP_URL=http://127.0.0.1:9344` to reuse a dedicated
-CDP-accessible browser.
+CI retains Linux/macOS/Windows Python coverage and a real Chromium acceptance job. Human
+adoption validation is tracked separately; automated tests do not replace first-time users.
 
 ## Security, contributing, and license
 
 Read [SECURITY.md](SECURITY.md) before reporting a vulnerability and
-[CONTRIBUTING.md](CONTRIBUTING.md) before proposing behavior or schema changes.
-
-Minimal Harness is released under the [MIT License](LICENSE).
+[CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow. Minimal Harness is
+released under the [MIT License](LICENSE).

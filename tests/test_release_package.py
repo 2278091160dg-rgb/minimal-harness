@@ -1,4 +1,5 @@
 import hashlib
+import json
 import subprocess
 import sys
 import tempfile
@@ -25,7 +26,10 @@ class ReleasePackageTest(unittest.TestCase):
         harness_dir = self.repo / "template" / ".harness"
         harness_dir.mkdir(parents=True)
         (harness_dir / "harness.py").write_bytes(b"print('committed')\r\n")
-        (harness_dir / "config.json").write_text("{}\n", encoding="utf-8")
+        (harness_dir / "harness_init.py").write_bytes(b"# initializer\r\n")
+        (harness_dir / "harness_runner.py").write_bytes(b"# bounded runner\r\n")
+        (harness_dir / "config.json").write_text('{"schema_version": 3}\n', encoding="utf-8")
+        (harness_dir / "tasks.json").write_text('{"schema_version": 3, "tasks": []}\n', encoding="utf-8")
         self.run_git("add", "template/.harness")
         self.run_git("commit", "-m", "add harness template")
 
@@ -36,8 +40,8 @@ class ReleasePackageTest(unittest.TestCase):
             capture_output=True,
         )
 
-    def run_builder(self, version="v1.2.3"):
-        output_dir = self.repo / "dist"
+    def run_builder(self, version="v1.2.3", output_name="dist", ref="HEAD"):
+        output_dir = self.repo / output_name
         result = subprocess.run(
             [
                 sys.executable,
@@ -45,7 +49,7 @@ class ReleasePackageTest(unittest.TestCase):
                 "--repo",
                 str(self.repo),
                 "--ref",
-                "HEAD",
+                ref,
                 "--version",
                 version,
                 "--output-dir",
@@ -55,6 +59,18 @@ class ReleasePackageTest(unittest.TestCase):
             text=True,
         )
         return result, output_dir
+
+    def commit_legacy_template(self, schema):
+        harness_dir = self.repo / "template" / ".harness"
+        (harness_dir / "config.json").write_text(
+            json.dumps({"schema_version": schema}) + "\n", encoding="utf-8"
+        )
+        (harness_dir / "tasks.json").write_text(
+            json.dumps({"schema_version": schema, "tasks": []}) + "\n", encoding="utf-8"
+        )
+        self.run_git("rm", "template/.harness/harness_init.py", "template/.harness/harness_runner.py")
+        self.run_git("add", "template/.harness")
+        self.run_git("commit", "-m", f"legacy schema {schema} template")
 
     def test_builds_fixed_ref_archive_and_matching_checksum(self):
         harness_dir = self.repo / "template" / ".harness"
@@ -74,14 +90,20 @@ class ReleasePackageTest(unittest.TestCase):
             file_names = {name for name in package.namelist() if not name.endswith("/")}
             self.assertEqual(
                 file_names,
-                {".harness/config.json", ".harness/harness.py"},
+                {
+                    ".harness/config.json",
+                    ".harness/tasks.json",
+                    ".harness/harness.py",
+                    ".harness/harness_init.py",
+                    ".harness/harness_runner.py",
+                },
             )
-            self.assertEqual(
-                package.read(".harness/harness.py"),
-                self.run_git(
-                    "show", "HEAD:template/.harness/harness.py"
-                ).stdout,
-            )
+            for name in ("harness.py", "harness_init.py", "harness_runner.py"):
+                self.assertEqual(
+                    package.read(f".harness/{name}"),
+                    self.run_git("show", f"HEAD:template/.harness/{name}").stdout,
+                )
+                self.assertNotIn(b"\r\n", package.read(f".harness/{name}"))
 
         expected_digest = hashlib.sha256(archive.read_bytes()).hexdigest()
         self.assertEqual(
@@ -89,12 +111,99 @@ class ReleasePackageTest(unittest.TestCase):
             f"{expected_digest}  {archive.name}\n",
         )
 
+    def test_missing_runtime_or_state_file_is_rejected_before_assets_are_written(self):
+        baseline = self.run_git("rev-parse", "HEAD").stdout.decode("ascii").strip()
+        required = ("harness.py", "harness_init.py", "harness_runner.py", "config.json", "tasks.json")
+        for name in required:
+            with self.subTest(missing=name):
+                try:
+                    self.run_git("rm", f"template/.harness/{name}")
+                    self.run_git("commit", "-m", f"remove {name}")
+
+                    result, output_dir = self.run_builder(output_name=f"missing-{name}")
+
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn(f".harness/{name}", result.stderr)
+                    self.assertFalse(output_dir.exists())
+                finally:
+                    self.run_git("reset", "--hard", baseline)
+
+    def test_committed_generated_outputs_are_rejected_before_assets_are_written(self):
+        baseline = self.run_git("rev-parse", "HEAD").stdout.decode("ascii").strip()
+        generated_directories = ("attempts", "artifacts", "reports", "evidence", "logs", "migrations", "__pycache__")
+        for name in generated_directories:
+            with self.subTest(generated=name):
+                try:
+                    generated = self.repo / "template" / ".harness" / name / "private.txt"
+                    generated.parent.mkdir()
+                    generated.write_text("private run output\n", encoding="utf-8")
+                    self.run_git("add", str(generated))
+                    self.run_git("commit", "-m", f"accidentally retain {name}")
+
+                    result, output_dir = self.run_builder(output_name=f"generated-{name}")
+
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("forbidden path", result.stderr)
+                    self.assertIn(f".harness/{name}/private.txt", result.stderr)
+                    self.assertFalse(output_dir.exists())
+                finally:
+                    self.run_git("reset", "--hard", baseline)
+
     def test_rejects_unsafe_version_without_writing_assets(self):
         result, output_dir = self.run_builder("../v1.2.3")
 
         self.assertEqual(result.returncode, 2)
         self.assertIn("invalid version", result.stderr.lower())
         self.assertFalse(output_dir.exists())
+
+    def test_legacy_fixed_refs_rebuild_without_v3_runtime_modules(self):
+        baseline = self.run_git("rev-parse", "HEAD").stdout.decode("ascii").strip()
+        for schema in (1, 2):
+            with self.subTest(schema=schema):
+                try:
+                    self.commit_legacy_template(schema)
+                    legacy_tag = f"v0.1.{schema}"
+                    self.run_git("tag", legacy_tag)
+                finally:
+                    self.run_git("reset", "--hard", baseline)
+
+                # HEAD contains v3; rebuilding the old tag must inspect the old config.
+                result, output_dir = self.run_builder(
+                    version=legacy_tag, output_name=f"legacy-{schema}", ref=legacy_tag
+                )
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                with zipfile.ZipFile(output_dir / f"minimal-harness-{legacy_tag}.zip") as package:
+                    self.assertEqual(
+                        {name for name in package.namelist() if not name.endswith("/")},
+                        {".harness/harness.py", ".harness/config.json", ".harness/tasks.json"},
+                    )
+                    self.assertEqual(schema, json.loads(package.read(".harness/config.json"))["schema_version"])
+                    self.assertEqual(
+                        self.run_git("show", f"{legacy_tag}:template/.harness/harness.py").stdout,
+                        package.read(".harness/harness.py"),
+                    )
+
+    def test_legacy_archive_still_rejects_new_generated_directories(self):
+        self.commit_legacy_template(2)
+        baseline = self.run_git("rev-parse", "HEAD").stdout.decode("ascii").strip()
+        for name in ("attempts", "artifacts", "reports"):
+            with self.subTest(generated=name):
+                try:
+                    generated = self.repo / "template" / ".harness" / name / "private.txt"
+                    generated.parent.mkdir()
+                    generated.write_text("private run output\n", encoding="utf-8")
+                    self.run_git("add", str(generated))
+                    self.run_git("commit", "-m", f"accidentally retain {name}")
+
+                    result, output_dir = self.run_builder(output_name=f"legacy-generated-{name}")
+
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("forbidden path", result.stderr)
+                    self.assertIn(f".harness/{name}/private.txt", result.stderr)
+                    self.assertFalse(output_dir.exists())
+                finally:
+                    self.run_git("reset", "--hard", baseline)
 
 
 if __name__ == "__main__":

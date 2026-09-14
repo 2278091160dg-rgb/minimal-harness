@@ -1,0 +1,13 @@
+{
+  "id": "greeting",
+  "title": "Greet a named user and support the default name",
+  "acceptance": [
+    {
+      "id": "greeting-cli",
+      "type": "command",
+      "instruction": "The CLI greets Ada by name and greets world when no name is given.",
+      "command": ["{python}", "tests/check_greeting.py"],
+      "timeout_seconds": 30
+    }
+  ]
+}

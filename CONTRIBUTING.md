@@ -25,13 +25,14 @@ Optional integrations belong outside `template/.harness/` when they require a pl
 python3 -m unittest discover -s tests -v
 node --test examples/todo/test.mjs
 python3 -m pip install ruff==0.15.12
-ruff check --no-cache template/.harness/harness.py integrations/github/publish_check.py scripts tests
+ruff check --no-cache template/.harness integrations/github/publish_check.py scripts tests examples/quickstart
 python3 template/.harness/harness.py --workspace template doctor
 python3 template/.harness/harness.py --workspace examples/todo doctor
 python3 template/.harness/harness.py --workspace examples/todo run check
 ```
 
-Browser-facing changes must also pass the real Chromium acceptance in `tests/todo_browser_acceptance.py`.
+Browser-facing changes must also pass `python3 tests/run_todo_walkthrough.py`, which runs
+real Chromium acceptance and the complete Harness task loop in a disposable project.
 
 ## Security reports
 

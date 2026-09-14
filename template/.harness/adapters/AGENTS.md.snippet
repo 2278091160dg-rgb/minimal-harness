@@ -1,5 +1,9 @@
+<!-- minimal-harness:start -->
 ## Minimal Harness workflow
 
-This repository uses `.harness/` as the task and verification source of truth. At the start of every session, run `python3 .harness/harness.py doctor`, then `python3 .harness/harness.py status`, and read `.harness/HANDOFF.md`.
-
-Keep exactly one task in progress. Run command acceptance with `verify`; record browser and manual observations with `record`. Run `complete` only after every acceptance item is passed. Do not treat code written, visual inspection, or an unavailable tool as proof. Respect `allowed_paths`, stop for every operation in `approval_required_operations`, and regenerate the handoff before ending the session.
+At session start run `python3 .harness/harness.py doctor` and `python3 .harness/harness.py status`, then read `.harness/HANDOFF.md`.
+Keep one task active. Define tasks with `task add --from SPEC.json`; use `task revise ID --from SPEC.json --note TEXT` for explicit changes. Do not edit runtime status or evidence fields by hand.
+Use `next` to select work, `verify` for command acceptance, and `record` for browser/manual observations. `run check` alone is not task evidence. Save browser artifacts in `.harness/artifacts/`.
+Run `report ID` to inspect readiness and evidence, and `complete ID` only after every acceptance passes against the current code and definition. An unavailable tool means `unverified`; browser/manual records are attestations.
+Respect configured allowed paths and approval operations. Stop at the configured failure limit; do not bypass a blocked task. Run `handoff` before ending the session.
+<!-- minimal-harness:end -->

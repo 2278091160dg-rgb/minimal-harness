@@ -8,6 +8,7 @@ import copy
 import fnmatch
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -24,17 +25,11 @@ TASK_STATUSES = {"pending", "in_progress", "blocked", "done"}
 CHECK_STATUSES = {"not_run", "passed", "failed", "unverified"}
 CHECK_TYPES = {"command", "browser", "manual"}
 SAFE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 EVIDENCE_SCHEMA_VERSION = 3
 VERIFICATION_SUBJECT_VERSION = 2
 LEGACY_VERIFICATION_SUBJECT_VERSION = 1
-GENERATED_STATE_PATHS = (
-    ".harness/tasks.json",
-    ".harness/evidence",
-    ".harness/logs",
-    ".harness/HANDOFF.md",
-    ".harness/migrations",
-)
+sys.dont_write_bytecode = True
 
 
 class HarnessError(Exception):
@@ -49,10 +44,6 @@ class GateError(HarnessError):
     exit_code = 1
 
 
-class StaleEvidenceError(GateError):
-    """Evidence is intact but no longer proves the current workspace state."""
-
-
 class GitAuditError(HarnessError):
     """Git exists for this workspace but could not provide a trustworthy snapshot."""
 
@@ -60,6 +51,9 @@ class GitAuditError(HarnessError):
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
+
+class StaleEvidenceError(GateError):
+    """Evidence is intact but no longer proves the current workspace state."""
 
 def escape_control_text(value: str) -> str:
     replacements = {"\n": r"\n", "\r": r"\r", "\t": r"\t"}
@@ -70,16 +64,79 @@ def escape_control_text(value: str) -> str:
         for character in value
     )
 
-
 def markdown_inline_text(value: Any) -> str:
     text = escape_control_text(str(value))
     markdown_sensitive = {"\\", "`", "*", "_", "[", "]", "<", ">", "#", "|"}
     return "".join(f"\\{character}" if character in markdown_sensitive else character for character in text)
 
-
 def display_paths(paths: Sequence[str]) -> str:
     return ", ".join(escape_control_text(path) for path in paths)
 
+def normalize_git_path(path: str) -> str:
+    return path.replace("\\", "/") if os.name == "nt" else path
+
+def git_path_excluded(path: str, excluded_paths: Sequence[str]) -> bool:
+    normalized = normalize_git_path(path)
+    return any(
+        normalized == excluded or normalized.startswith(f"{excluded.rstrip('/')}/")
+        for excluded in excluded_paths
+    )
+
+def validate_fingerprint_manifest(value: Any, field: str) -> None:
+    if not isinstance(value, dict) or not all(
+        isinstance(path, str)
+        and safe_git_relative_path(path)
+        and isinstance(fingerprint, str)
+        and (
+            valid_worktree_fingerprint(fingerprint)
+            or re.fullmatch(r"gitlink:sha256:[0-9a-f]{64}", fingerprint)
+        )
+        for path, fingerprint in value.items()
+    ):
+        raise HarnessError(f"{field} must be a safe file fingerprint manifest")
+
+def validate_verification_subject(value: Any, field: str) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        raise HarnessError(f"{field} must be an object")
+    subject_version = value.get("version")
+    if subject_version not in {
+        LEGACY_VERIFICATION_SUBJECT_VERSION,
+        VERIFICATION_SUBJECT_VERSION,
+    }:
+        raise HarnessError(
+            f"{field}.version must be {LEGACY_VERIFICATION_SUBJECT_VERSION} "
+            f"or {VERIFICATION_SUBJECT_VERSION}"
+        )
+    captured_at = require_string(value.get("captured_at"), f"{field}.captured_at")
+    snapshot = value.get("git")
+    validate_git_baseline(snapshot, f"{field}.git")
+    if snapshot.get("captured_at") != captured_at:
+        raise HarnessError(f"{field}.captured_at must match {field}.git.captured_at")
+    workspace_prefix = value.get("workspace_prefix")
+    if snapshot["available"]:
+        if not isinstance(workspace_prefix, str) or (
+            workspace_prefix and not safe_git_relative_path(workspace_prefix)
+        ):
+            raise HarnessError(f"{field}.workspace_prefix must be a normalized relative path")
+    elif workspace_prefix is not None:
+        raise HarnessError(f"{field}.workspace_prefix must be null when Git is unavailable")
+    if subject_version == VERIFICATION_SUBJECT_VERSION:
+        for name in ("tracked_fingerprints", "ignored_fingerprints"):
+            validate_fingerprint_manifest(value.get(name), f"{field}.{name}")
+            if not snapshot["available"] and value[name]:
+                raise HarnessError(f"{field}.{name} must be empty when Git is unavailable")
+    return value
+
+def changed_manifest_paths(before: Dict[str, str], after: Dict[str, str]) -> List[str]:
+    return sorted(
+        path for path in set(before) | set(after) if before.get(path) != after.get(path)
+    )
+
+def task_requires_git(task: Dict[str, Any]) -> bool:
+    policy = task.get("policy_baseline")
+    if isinstance(policy, dict) and isinstance(policy.get("require_git_for_completion"), bool):
+        return policy["require_git_for_completion"]
+    return True
 
 def read_json(path: Path) -> Dict[str, Any]:
     try:
@@ -118,7 +175,7 @@ def validate_argv(value: Any, field: str, optional: bool = False) -> None:
 def validate_policy(policy: Any, field: str = "policy") -> None:
     if not isinstance(policy, dict):
         raise HarnessError(f"{field} must be an object")
-    if policy.get("schema_version") != SCHEMA_VERSION:
+    if policy.get("schema_version") not in ({2, SCHEMA_VERSION} if "baseline" in field else {SCHEMA_VERSION}):
         raise HarnessError(f"{field}.schema_version must be {SCHEMA_VERSION}")
     limit = policy.get("max_consecutive_failures")
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
@@ -232,6 +289,7 @@ def validate_v1_tasks(state: Dict[str, Any]) -> None:
                 raise HarnessError(f"acceptance {check_id} consecutive_failures must be non-negative")
             if check["type"] == "command":
                 validate_argv(check.get("command"), f"acceptance {check_id} command")
+                validate_timeout(check.get("timeout_seconds", 300), f"acceptance {check_id} timeout_seconds")
             else:
                 steps = check.get("steps")
                 if not isinstance(steps, list) or not steps or not all(
@@ -259,7 +317,7 @@ def validate_v1_tasks(state: Dict[str, Any]) -> None:
 def validate_git_baseline(value: Any, field: str) -> None:
     if not isinstance(value, dict):
         raise HarnessError(f"{field} must be an object")
-    if value.get("version") != SCHEMA_VERSION:
+    if value.get("version") not in {2, SCHEMA_VERSION}:
         raise HarnessError(f"{field}.version must be {SCHEMA_VERSION}")
     require_string(value.get("captured_at"), f"{field}.captured_at")
     if not isinstance(value.get("available"), bool):
@@ -312,6 +370,7 @@ def valid_worktree_fingerprint(value: str) -> bool:
         value == "missing"
         or re.fullmatch(r"file:[0-7]{3,4}:sha256:[0-9a-f]{64}", value)
         or re.fullmatch(r"symlink:sha256:[0-9a-f]{64}", value)
+        or re.fullmatch(r"gitlink:(?:[0-9a-f]{40}|[0-9a-f]{64}):head:(?:[0-9a-f]{40}|[0-9a-f]{64}):sha256:[0-9a-f]{64}", value)
     )
 
 
@@ -368,6 +427,7 @@ def validate_tasks(state: Dict[str, Any]) -> None:
                 raise HarnessError(f"acceptance {check_id} failed status requires a positive failure counter")
             if check["type"] == "command":
                 validate_argv(check.get("command"), f"acceptance {check_id} command")
+                validate_timeout(check.get("timeout_seconds", 300), f"acceptance {check_id} timeout_seconds")
             else:
                 steps = check.get("steps")
                 if not isinstance(steps, list) or not steps or not all(isinstance(step, str) and step for step in steps):
@@ -476,6 +536,7 @@ def run_git(
             text=True,
             encoding="utf-8",
             errors="surrogateescape",
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
             capture_output=True,
             check=False,
         )
@@ -492,10 +553,6 @@ def git_workspace_prefix(workspace: Path) -> str:
     return normalize_git_path(result.stdout.strip()).strip("/")
 
 
-def normalize_git_path(path: str) -> str:
-    return path.replace("\\", "/") if os.name == "nt" else path
-
-
 def git_path_relative_to_workspace(path: str, prefix: str) -> Optional[str]:
     normalized = normalize_git_path(path)
     if not prefix:
@@ -504,14 +561,6 @@ def git_path_relative_to_workspace(path: str, prefix: str) -> Optional[str]:
     if normalized.startswith(marker):
         return normalized[len(marker) :]
     return None
-
-
-def git_path_excluded(path: str, excluded_paths: Sequence[str]) -> bool:
-    normalized = normalize_git_path(path)
-    return any(
-        normalized == excluded or normalized.startswith(f"{excluded.rstrip('/')}/")
-        for excluded in excluded_paths
-    )
 
 
 def git_snapshot(
@@ -643,6 +692,10 @@ def workspace_path_fingerprint(workspace: Path, path: str) -> str:
         if candidate.is_file():
             mode = candidate.stat().st_mode & 0o7777
             return f"file:{mode:04o}:sha256:{file_sha256(candidate)}"
+        if candidate.is_dir():
+            links = gitlink_entries(workspace, path)
+            if path in links:
+                return submodule_fingerprint(workspace, path, links[path])
         if candidate.exists():
             raise GitAuditError(
                 f"Git cannot fingerprint non-regular dirty path: {escape_control_text(path)}"
@@ -659,51 +712,6 @@ def git_index_fingerprint(workspace: Path, path: str) -> str:
     result = run_git(workspace, ["ls-files", "--stage", "-z", "--", path], "index read")
     payload = result.stdout.encode("utf-8", "surrogateescape")
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
-
-
-def git_workspace_paths(
-    workspace: Path,
-    arguments: List[str],
-    operation: str,
-    excluded_paths: Sequence[str],
-) -> List[str]:
-    prefix = git_workspace_prefix(workspace)
-    result = run_git(
-        workspace,
-        ["ls-files", "--full-name", "-z", *arguments, "--", "."],
-        operation,
-    )
-    relative_paths = (
-        git_path_relative_to_workspace(path, prefix)
-        for path in result.stdout.split("\0")
-        if path
-    )
-    return sorted(
-        {
-            path
-            for path in relative_paths
-            if path is not None and not git_path_excluded(path, excluded_paths)
-        }
-    )
-
-
-def git_manifest_fingerprint(workspace: Path, path: str) -> str:
-    candidate = workspace / path
-    if candidate.is_dir() and not candidate.is_symlink():
-        result = run_git(workspace, ["ls-files", "--stage", "-z", "--", path], "index read")
-        payload = result.stdout.encode("utf-8", "surrogateescape")
-        if any(entry.startswith("160000 ") for entry in result.stdout.split("\0") if entry):
-            return f"gitlink:sha256:{hashlib.sha256(payload).hexdigest()}"
-    return workspace_path_fingerprint(workspace, path)
-
-
-def git_workspace_manifest(
-    workspace: Path,
-    arguments: List[str],
-    operation: str,
-) -> Dict[str, str]:
-    paths = git_workspace_paths(workspace, arguments, operation, GENERATED_STATE_PATHS)
-    return {path: git_manifest_fingerprint(workspace, path) for path in paths}
 
 
 def git_committed_changes(
@@ -798,12 +806,19 @@ def evidence_details_for_handoff(
     harness_dir: Path,
     task: Dict[str, Any],
     check: Dict[str, Any],
+    config: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
     reference = check.get("latest_evidence")
     if not isinstance(reference, str) or not reference:
         return None
     try:
-        evidence = validate_evidence_reference(workspace, harness_dir, task, check)
+        validate_evidence_reference(workspace, harness_dir, task, check)
+        evidence_path = resolve_inside(reference, workspace, "evidence path")
+        evidence = read_json(evidence_path)
+        if task["status"] in {"in_progress", "blocked"} and check["status"] == "passed":
+            require_current_contract(task)
+            snapshot = source_snapshot(workspace, effective_policy(task, config))
+            evidence_freshness(workspace, harness_dir, task, check, snapshot)
     except (HarnessError, OSError) as exc:
         return {
             "valid": False,
@@ -830,7 +845,8 @@ def completed_task_evidence_label(
     try:
         for check in task["acceptance"]:
             evidence = validate_evidence_reference(workspace, harness_dir, task, check)
-            if evidence is not None and evidence.get("schema_version") != EVIDENCE_SCHEMA_VERSION:
+            if evidence is not None and (evidence.get("schema_version") != EVIDENCE_SCHEMA_VERSION
+                                         or "source_snapshot" not in evidence):
                 legacy = True
             if (
                 evidence is not None
@@ -842,7 +858,6 @@ def completed_task_evidence_label(
     except (HarnessError, OSError) as exc:
         return f" [evidence invalid: {markdown_inline_text(exc)}]"
     return " [legacy evidence]" if legacy else ""
-
 
 def historical_failures_for_handoff(workspace: Path, harness_dir: Path) -> List[Dict[str, Any]]:
     failures = []
@@ -866,10 +881,7 @@ def historical_failures_for_handoff(workspace: Path, harness_dir: Path) -> List[
             evidence = read_json(evidence_path)
             if evidence.get("result") != "failed":
                 continue
-            if evidence.get("schema_version") not in {
-                SCHEMA_VERSION,
-                EVIDENCE_SCHEMA_VERSION,
-            }:
+            if evidence.get("schema_version") not in {2, SCHEMA_VERSION}:
                 raise HarnessError("historical evidence has an unsupported schema")
             task_id = require_identifier(evidence.get("task_id"), "historical evidence task_id")
             check_id = require_identifier(evidence.get("check_id"), "historical evidence check_id")
@@ -880,15 +892,17 @@ def historical_failures_for_handoff(workspace: Path, harness_dir: Path) -> List[
                 raise HarnessError("historical evidence method is invalid")
             expected_provenance = {
                 "command": "command-exit",
-                "browser": "browser-tool",
+                "browser": "browser-attestation",
                 "manual": "manual-attestation",
             }[method]
-            if evidence.get("provenance") != expected_provenance:
+            legacy_browser = (method == "browser" and "source_snapshot" not in evidence
+                              and evidence.get("provenance") == "browser-tool")
+            if evidence.get("provenance") != expected_provenance and not legacy_browser:
                 raise HarnessError("historical evidence provenance is invalid")
             log_metadata = evidence.get("log")
             if log_metadata is not None:
                 validate_file_metadata(
-                    log_metadata, workspace, "historical evidence log", evidence_path.parent.resolve()
+                    log_metadata, workspace, "historical evidence log", harness_dir
                 )
             artifacts = evidence.get("artifacts")
             if not isinstance(artifacts, list) or not all(
@@ -959,23 +973,18 @@ def render_handoff(workspace: Path, config: Dict[str, Any], state: Dict[str, Any
         "",
     ]
     if current:
-        lines.append(
-            f"### {current['id']}: {markdown_inline_text(current['title'])} "
-            f"[{current['status']}]"
-        )
+        lines.append(f"### {current['id']}: {markdown_inline_text(current['title'])} [{current['status']}]")
         lines.append("")
         for check in current["acceptance"]:
-            lines.append(
-                f"- {check['id']} [{check['status']}] ({check['type']}): "
-                f"{markdown_inline_text(check['instruction'])}"
-            )
-            details = evidence_details_for_handoff(workspace, workspace / ".harness", current, check)
+            details = evidence_details_for_handoff(workspace, workspace / ".harness", current, check, config)
+            displayed_status = check["status"]
+            if displayed_status == "passed" and (not details or not details["valid"]):
+                displayed_status = "unverified (stored passed; stale evidence)"
+            lines.append(f"- {check['id']} [{displayed_status}] ({check['type']}): {markdown_inline_text(check['instruction'])}")
             if details:
                 if details["valid"]:
-                    lines.append(f"  - Evidence time: {details['timestamp']}")
-                    lines.append(
-                        f"  - Evidence summary: {markdown_inline_text(details['summary'])}"
-                    )
+                    lines.append(f"  - Evidence time: {markdown_inline_text(details['timestamp'])}")
+                    lines.append(f"  - Evidence summary: {markdown_inline_text(details['summary'])}")
                     lines.append(f"  - Evidence path: {markdown_inline_text(details['path'])}")
                     if details["not_git_bound_by_policy"]:
                         lines.append("  - WARNING: Evidence is not Git-bound by policy")
@@ -993,10 +1002,7 @@ def render_handoff(workspace: Path, config: Dict[str, Any], state: Dict[str, Any
         or ["None"]
     )
     lines.extend(["", "## Failures and blockers", ""])
-    failure_lines = [
-        f"- {task['id']}: {markdown_inline_text(task.get('block_reason', 'blocked'))}"
-        for task in blocked
-    ]
+    failure_lines = [f"- {task['id']}: {markdown_inline_text(task.get('block_reason', 'blocked'))}" for task in blocked]
     failure_lines.extend(
         f"- {task['id']}/{check['id']}: failed ({check['consecutive_failures']} consecutive)"
         for task, check in failed_checks
@@ -1004,23 +1010,15 @@ def render_handoff(workspace: Path, config: Dict[str, Any], state: Dict[str, Any
     failure_lines.extend(
         (
             "- Historical failure record (untrusted summary omitted) "
-            f"{item['task_id']}/{item['check_id']} at {item['timestamp']}: "
-            f"{markdown_inline_text(item['path'])}"
+            f"{item['task_id']}/{item['check_id']} at {markdown_inline_text(item['timestamp'])}: {markdown_inline_text(item['path'])}"
             if item["valid"]
-            else f"- Historical evidence invalid {markdown_inline_text(item['path'])}: "
-            f"{markdown_inline_text(item['error'])}"
+            else f"- Historical evidence invalid {markdown_inline_text(item['path'])}: {markdown_inline_text(item['error'])}"
         )
         for item in historical_failures
     )
     lines.extend(failure_lines or ["None"])
     lines.extend(["", "## Unverified", ""])
-    lines.extend(
-        [
-            f"- {task['id']}/{check['id']}: {markdown_inline_text(check['instruction'])}"
-            for task, check in unverified_checks
-        ]
-        or ["None"]
-    )
+    lines.extend([f"- {task['id']}/{check['id']}: {markdown_inline_text(check['instruction'])}" for task, check in unverified_checks] or ["None"])
     lines.extend(["", "## Working tree (excluding generated .harness/HANDOFF.md)", ""])
     if snapshot["available"]:
         displayed_paths = [
@@ -1046,9 +1044,7 @@ def render_handoff(workspace: Path, config: Dict[str, Any], state: Dict[str, Any
             else:
                 lines.append("None")
         except (GateError, GitAuditError) as exc:
-            lines.append(
-                f"WARNING: Scope audit unavailable: {markdown_inline_text(exc)}"
-            )
+            lines.append(f"WARNING: Scope audit unavailable: {markdown_inline_text(exc)}")
     relevant_task = current or (completed[0] if completed else None)
     baseline_dirty = (
         relevant_task.get("git_baseline", {}).get("dirty_paths", []) if relevant_task else []
@@ -1060,21 +1056,13 @@ def render_handoff(workspace: Path, config: Dict[str, Any], state: Dict[str, Any
     else:
         lines.append("None")
     lines.extend(["", "## Next action", ""])
-    if current and current["status"] == "blocked":
-        lines.append(f"Run `python3 .harness/harness.py unblock {current['id']} --note \"<what changed>\"` after human intervention.")
-    elif current:
-        pending_command = next(
-            (check for check in current["acceptance"] if check["type"] == "command" and check["status"] != "passed"),
-            None,
-        )
-        if pending_command:
-            lines.append(f"Run `python3 .harness/harness.py verify {current['id']}`.")
-        else:
-            pending_check = next((check for check in current["acceptance"] if check["status"] != "passed"), None)
-            if pending_check:
-                lines.append(f"Perform `{pending_check['id']}` and record the observed result.")
-            else:
-                lines.append(f"Run `python3 .harness/harness.py complete {current['id']}`.")
+    if current:
+        audit = completion_audit(workspace, workspace / ".harness", config, state, current)
+        if audit["next_command"]:
+            lines.append(f"Run `{audit['next_command']}`.")
+        if audit["issues"]:
+            lines.extend(["", "### Completion audit", ""])
+            lines.extend(f"- {markdown_inline_text(issue)}" for issue in audit["issues"])
     elif any(task["status"] == "pending" for task in state["tasks"]):
         lines.append("Run `python3 .harness/harness.py next`.")
     else:
@@ -1152,178 +1140,6 @@ def regular_file_metadata(path: Path, workspace: Path) -> Dict[str, Any]:
     }
 
 
-def capture_verification_subject(workspace: Path) -> Dict[str, Any]:
-    snapshot = git_snapshot(workspace, GENERATED_STATE_PATHS)
-    workspace_prefix = git_workspace_prefix(workspace) if snapshot["available"] else None
-    tracked_fingerprints = (
-        git_workspace_manifest(workspace, ["--cached"], "tracked file listing")
-        if snapshot["available"]
-        else {}
-    )
-    ignored_fingerprints = (
-        git_workspace_manifest(
-            workspace,
-            ["--others", "--ignored", "--exclude-standard"],
-            "ignored file listing",
-        )
-        if snapshot["available"]
-        else {}
-    )
-    return {
-        "version": VERIFICATION_SUBJECT_VERSION,
-        "captured_at": snapshot["captured_at"],
-        "workspace_prefix": workspace_prefix,
-        "git": snapshot,
-        "tracked_fingerprints": tracked_fingerprints,
-        "ignored_fingerprints": ignored_fingerprints,
-    }
-
-
-def validate_fingerprint_manifest(value: Any, field: str) -> None:
-    if not isinstance(value, dict) or not all(
-        isinstance(path, str)
-        and safe_git_relative_path(path)
-        and isinstance(fingerprint, str)
-        and (
-            valid_worktree_fingerprint(fingerprint)
-            or re.fullmatch(r"gitlink:sha256:[0-9a-f]{64}", fingerprint)
-        )
-        for path, fingerprint in value.items()
-    ):
-        raise HarnessError(f"{field} must be a safe file fingerprint manifest")
-
-
-def validate_verification_subject(value: Any, field: str) -> Dict[str, Any]:
-    if not isinstance(value, dict):
-        raise HarnessError(f"{field} must be an object")
-    subject_version = value.get("version")
-    if subject_version not in {
-        LEGACY_VERIFICATION_SUBJECT_VERSION,
-        VERIFICATION_SUBJECT_VERSION,
-    }:
-        raise HarnessError(
-            f"{field}.version must be {LEGACY_VERIFICATION_SUBJECT_VERSION} "
-            f"or {VERIFICATION_SUBJECT_VERSION}"
-        )
-    captured_at = require_string(value.get("captured_at"), f"{field}.captured_at")
-    snapshot = value.get("git")
-    validate_git_baseline(snapshot, f"{field}.git")
-    if snapshot.get("captured_at") != captured_at:
-        raise HarnessError(f"{field}.captured_at must match {field}.git.captured_at")
-    workspace_prefix = value.get("workspace_prefix")
-    if snapshot["available"]:
-        if not isinstance(workspace_prefix, str) or (
-            workspace_prefix and not safe_git_relative_path(workspace_prefix)
-        ):
-            raise HarnessError(f"{field}.workspace_prefix must be a normalized relative path")
-    elif workspace_prefix is not None:
-        raise HarnessError(f"{field}.workspace_prefix must be null when Git is unavailable")
-    if subject_version == VERIFICATION_SUBJECT_VERSION:
-        for name in ("tracked_fingerprints", "ignored_fingerprints"):
-            validate_fingerprint_manifest(value.get(name), f"{field}.{name}")
-            if not snapshot["available"] and value[name]:
-                raise HarnessError(f"{field}.{name} must be empty when Git is unavailable")
-    return value
-
-
-def changed_manifest_paths(before: Dict[str, str], after: Dict[str, str]) -> List[str]:
-    return sorted(
-        path for path in set(before) | set(after) if before.get(path) != after.get(path)
-    )
-
-
-def task_requires_git(task: Dict[str, Any]) -> bool:
-    policy = task.get("policy_baseline")
-    if isinstance(policy, dict) and isinstance(policy.get("require_git_for_completion"), bool):
-        return policy["require_git_for_completion"]
-    return True
-
-
-def validate_evidence_freshness(
-    workspace: Path,
-    task: Dict[str, Any],
-    check: Dict[str, Any],
-    evidence: Dict[str, Any],
-) -> None:
-    version = evidence.get("schema_version")
-    if version == SCHEMA_VERSION:
-        if task.get("status") == "done":
-            return
-        if check.get("status") == "passed":
-            raise StaleEvidenceError(
-                f"stale evidence for {task['id']}/{check['id']}: schema v2 has no verification subject; "
-                "re-run verification"
-            )
-        return
-    if version != EVIDENCE_SCHEMA_VERSION:
-        raise HarnessError(
-            f"evidence schema_version must be {EVIDENCE_SCHEMA_VERSION} for "
-            f"{task['id']}/{check['id']}"
-        )
-    subject = validate_verification_subject(
-        evidence.get("verification_subject"),
-        f"evidence verification_subject for {task['id']}/{check['id']}",
-    )
-    if check.get("status") != "passed" or task.get("status") == "done":
-        return
-    if subject["version"] == LEGACY_VERIFICATION_SUBJECT_VERSION:
-        raise StaleEvidenceError(
-            f"stale evidence for {task['id']}/{check['id']}: verification subject v1 "
-            "has no complete tracked/ignored manifests; re-run verification"
-        )
-    if not task_requires_git(task):
-        return
-    if not subject["git"]["available"]:
-        raise StaleEvidenceError(
-            f"stale evidence for {task['id']}/{check['id']}: verification was not Git-bound"
-        )
-    try:
-        current = capture_verification_subject(workspace)
-        if current["workspace_prefix"] != subject["workspace_prefix"]:
-            raise StaleEvidenceError(
-                f"stale evidence for {task['id']}/{check['id']}: Git workspace location changed"
-            )
-        head_changed = current["git"]["head"] != subject["git"]["head"]
-        changed_paths = changed_paths_since_baseline(
-            workspace,
-            subject["git"],
-            current["git"],
-            GENERATED_STATE_PATHS,
-        )
-        changed_paths = sorted(
-            set(changed_paths)
-            | set(
-                changed_manifest_paths(
-                    subject["tracked_fingerprints"], current["tracked_fingerprints"]
-                )
-            )
-            | set(
-                changed_manifest_paths(
-                    subject["ignored_fingerprints"], current["ignored_fingerprints"]
-                )
-            )
-        )
-    except (GateError, GitAuditError) as exc:
-        if isinstance(exc, StaleEvidenceError):
-            raise
-        raise StaleEvidenceError(
-            f"stale evidence for {task['id']}/{check['id']}: {exc}"
-        ) from exc
-    if head_changed:
-        changed_suffix = (
-            "; changed paths: " + display_paths(changed_paths) if changed_paths else ""
-        )
-        raise StaleEvidenceError(
-            f"stale evidence for {task['id']}/{check['id']}: Git HEAD changed from "
-            f"{subject['git']['head']} to {current['git']['head']}{changed_suffix}"
-        )
-    if changed_paths:
-        raise StaleEvidenceError(
-            f"stale evidence for {task['id']}/{check['id']}; changed after verification: "
-            + display_paths(changed_paths)
-        )
-
-
 def create_evidence(
     workspace: Path,
     harness_dir: Path,
@@ -1337,6 +1153,8 @@ def create_evidence(
     exit_code: Optional[int] = None,
     output: Optional[bytes] = None,
     artifacts: Optional[List[Dict[str, Any]]] = None,
+    binding: Optional[Dict[str, Any]] = None,
+    log_path: Optional[Path] = None,
 ) -> tuple[str, str]:
     timestamp = utc_now()
     file_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
@@ -1344,15 +1162,16 @@ def create_evidence(
     require_safe_directory(harness_dir, workspace, create=False)
     evidence_root = require_safe_directory(harness_dir / "evidence", workspace, create=True)
     evidence_dir = require_safe_directory(evidence_root / task["id"], workspace, create=True)
-    verification_subject = capture_verification_subject(workspace)
     log_metadata = None
     if output is not None:
         absolute_log_path = evidence_dir / f"{stem}.log"
         write_unique_bytes(absolute_log_path, output)
         log_metadata = regular_file_metadata(absolute_log_path, workspace)
+    if log_path is not None:
+        log_metadata = regular_file_metadata(log_path, workspace)
     evidence_path = evidence_dir / f"{stem}.json"
     evidence = {
-        "schema_version": EVIDENCE_SCHEMA_VERSION,
+        "schema_version": SCHEMA_VERSION,
         "evidence_id": stem,
         "task_id": task["id"],
         "check_id": check["id"],
@@ -1363,13 +1182,13 @@ def create_evidence(
         "tool": tool,
         "provenance": {
             "command": "command-exit",
-            "browser": "browser-tool",
+            "browser": "browser-attestation",
             "manual": "manual-attestation",
         }[method],
         "exit_code": exit_code,
         "log": log_metadata,
         "artifacts": artifacts or [],
-        "verification_subject": verification_subject,
+        **(binding or {}),
     }
     write_unique_bytes(
         evidence_path,
@@ -1421,10 +1240,10 @@ def validate_evidence_reference(
     reference = check.get("latest_evidence")
     if reference is None:
         if task.get("legacy_evidence") is True and task.get("status") == "done":
-            return None
+            return
         if check["status"] == "passed":
             raise HarnessError(f"passed acceptance {task['id']}/{check['id']} requires valid evidence")
-        return None
+        return
     if not isinstance(reference, str) or not reference:
         raise HarnessError(f"latest evidence for {task['id']}/{check['id']} must be a path string")
     require_safe_directory(harness_dir, workspace, create=False)
@@ -1449,14 +1268,15 @@ def validate_evidence_reference(
     if not isinstance(expected_digest, str) or file_sha256(evidence_path) != expected_digest:
         raise HarnessError(f"evidence digest does not match for {task['id']}/{check['id']}")
     evidence = read_json(evidence_path)
-    evidence_version = evidence.get("schema_version")
-    if evidence_version not in {SCHEMA_VERSION, EVIDENCE_SCHEMA_VERSION}:
+    version = evidence.get("schema_version")
+    if version not in {2, SCHEMA_VERSION}:
         if task.get("legacy_evidence") is True and task.get("status") == "done":
             return evidence
-        raise HarnessError(
-            f"evidence schema_version must be {EVIDENCE_SCHEMA_VERSION} for "
-            f"{task['id']}/{check['id']}"
-        )
+        raise HarnessError(f"evidence schema_version must be {SCHEMA_VERSION} for {task['id']}/{check['id']}")
+    if "verification_subject" in evidence:
+        validate_verification_subject(evidence["verification_subject"], "evidence verification_subject")
+    if "source_snapshot" in evidence:
+        validate_source_snapshot(evidence["source_snapshot"], "evidence source_snapshot")
     expected = {
         "task_id": task["id"],
         "check_id": check["id"],
@@ -1471,7 +1291,7 @@ def validate_evidence_reference(
     log_metadata = evidence.get("log")
     if log_metadata is not None:
         validate_file_metadata(
-            log_metadata, workspace, f"evidence log for {task['id']}/{check['id']}", evidence_root
+            log_metadata, workspace, f"evidence log for {task['id']}/{check['id']}", harness_dir
         )
     artifacts = evidence.get("artifacts")
     if not isinstance(artifacts, list) or not all(isinstance(item, dict) for item in artifacts):
@@ -1484,17 +1304,18 @@ def validate_evidence_reference(
         raise HarnessError(f"passed command evidence must have exit_code 0 for {task['id']}/{check['id']}")
     expected_provenance = {
         "command": "command-exit",
-        "browser": "browser-tool",
+        "browser": "browser-attestation",
         "manual": "manual-attestation",
     }[check["type"]]
-    if evidence.get("provenance") != expected_provenance:
+    legacy_browser = (check["type"] == "browser" and "source_snapshot" not in evidence
+                      and evidence.get("provenance") == "browser-tool")
+    if evidence.get("provenance") != expected_provenance and not legacy_browser:
         raise HarnessError(f"evidence provenance does not match for {task['id']}/{check['id']}")
     if check["type"] == "browser" and check["status"] == "passed":
         if not isinstance(evidence.get("tool"), str) or not evidence["tool"].strip():
             raise HarnessError(f"passed browser evidence requires a tool for {task['id']}/{check['id']}")
         if not artifacts:
             raise HarnessError(f"passed browser evidence requires an artifact for {task['id']}/{check['id']}")
-    validate_evidence_freshness(workspace, task, check, evidence)
     return evidence
 
 
@@ -1544,7 +1365,9 @@ def command_doctor(workspace: Path) -> int:
     for name, argv in config["commands"].items():
         if argv is not None and not executable_available(workspace, argv[0]):
             raise HarnessError(f"commands.{name} executable not found: {argv[0]}")
+    stale_issues = []
     for task in state["tasks"]:
+        current_source = None
         for check in task["acceptance"]:
             if check["type"] == "command" and not executable_available(
                 workspace, check["command"][0]
@@ -1553,28 +1376,25 @@ def command_doctor(workspace: Path) -> int:
                     f"acceptance {task['id']}/{check['id']} executable not found: {check['command'][0]}"
                 )
             evidence = validate_evidence_reference(workspace, harness_dir, task, check)
-            if task.get("status") == "done" and evidence is not None:
-                evidence_version = evidence.get("schema_version")
-                if evidence_version != EVIDENCE_SCHEMA_VERSION:
-                    print(
-                        f"WARNING: {task['id']}/{check['id']} uses legacy schema "
-                        f"v{evidence_version} evidence"
-                    )
-                elif (
-                    isinstance(evidence.get("verification_subject"), dict)
-                    and evidence["verification_subject"].get("version")
-                    != VERIFICATION_SUBJECT_VERSION
-                ):
-                    print(
-                        f"WARNING: {task['id']}/{check['id']} uses legacy verification "
-                        f"subject v{evidence['verification_subject'].get('version')}"
-                    )
-        if (
-            task.get("status") in {"in_progress", "blocked"}
-            and not task_requires_git(task)
-            and any(check.get("status") == "passed" for check in task["acceptance"])
-        ):
-            print(f"WARNING: {task['id']} evidence is not Git-bound by policy")
+            if task["status"] in {"in_progress", "blocked"} and check["status"] == "passed":
+                try:
+                    require_current_contract(task)
+                    if current_source is None:
+                        current_source = source_snapshot(workspace, effective_policy(task, config))
+                    evidence_freshness(workspace, harness_dir, task, check, current_source)
+                except (GateError, GitAuditError) as exc:
+                    stale_issues.append(f"{task['id']}/{check['id']}: {exc}")
+            if task["status"] == "done" and evidence is not None:
+                version = evidence.get("schema_version")
+                if version != SCHEMA_VERSION:
+                    print(f"WARNING: {task['id']}/{check['id']} uses legacy schema v{version} evidence")
+                elif "source_snapshot" not in evidence:
+                    subject = evidence.get("verification_subject")
+                    label = f"legacy verification subject v{subject['version']}" if isinstance(subject, dict) else "legacy evidence"
+                    print(f"WARNING: {task['id']}/{check['id']} uses {label}")
+        if (task["status"] in {"in_progress", "blocked"} and not task_requires_git(task)
+                and any(check["status"] == "passed" for check in task["acceptance"])):
+            print(f"WARNING: {task['id']} evidence is not Git-bound by policy; local source contents remain bound")
     print(f"OK: configuration valid ({len(state['tasks'])} tasks)")
     snapshot = git_snapshot(workspace)
     if snapshot["available"]:
@@ -1583,7 +1403,9 @@ def command_doctor(workspace: Path) -> int:
             print(f"WARNING: working tree has {len(snapshot['dirty_paths'])} changed path(s)")
     else:
         print("WARNING: Git unavailable or workspace is not a repository")
-    return 0
+    for issue in stale_issues:
+        print("WARNING: " + escape_control_text(issue), file=sys.stderr)
+    return 1 if stale_issues else 0
 
 
 def command_next(workspace: Path) -> int:
@@ -1609,6 +1431,7 @@ def command_next(workspace: Path) -> int:
         ),
         "require_git_for_completion": config["policy"]["require_git_for_completion"],
     }
+    freeze_contract(task)
     state["current_task_id"] = task["id"]
     atomic_write_json(harness_dir / "tasks.json", state)
     refresh_handoff(workspace, harness_dir, config, state)
@@ -1676,12 +1499,19 @@ def command_run(workspace: Path, command_name: str) -> int:
     argv = config["commands"][command_name]
     if argv is None:
         raise GateError(f"commands.{command_name} is not configured")
-    capture = command_name != "start"
-    result = run_argv(argv, workspace, capture=capture)
-    if result.stdout:
-        output = decode_command_output(result.stdout)
-        print(output, end="" if output.endswith("\n") else "\n")
-    return 0 if result.returncode == 0 else 1
+    if command_name == "start":
+        return 0 if run_argv(argv, workspace, capture=False).returncode == 0 else 1
+    from harness_runner import run_bounded
+    logs = require_safe_directory(workspace / ".harness" / "attempts" / "runs", workspace, create=True)
+    log_path = logs / f"{uuid.uuid4().hex}.log"
+    try:
+        result = run_bounded(expand_argv(argv), workspace, log_path)
+    except FileNotFoundError as exc:
+        raise HarnessError(f"executable not found: {argv[0]}") from exc
+    display_log(log_path)
+    if result.reason != "exit":
+        print(f"Run ended: {result.reason}", file=sys.stderr)
+    return 0 if result.returncode == 0 and result.reason == "exit" else (130 if result.reason == "interrupted" else 1)
 
 
 def command_verify(workspace: Path, requested_task_id: Optional[str]) -> int:
@@ -1697,30 +1527,86 @@ def command_verify(workspace: Path, requested_task_id: Optional[str]) -> int:
     checks = [check for check in task["acceptance"] if check["type"] == "command"]
     if not checks:
         raise GateError(f"task {task_id} has no command acceptance checks")
+    require_current_contract(task)
+    from harness_runner import run_bounded
+    # Invalidate every previous command success before starting any child. An interrupted
+    # verification batch must never leave later checks looking freshly verified.
+    attempts = require_safe_directory(harness_dir / "attempts" / task_id, workspace, create=True)
     for check in checks:
-        result = run_argv(check["command"], workspace, capture=True)
-        output = result.stdout or b""
-        if output:
-            displayed_output = decode_command_output(output)
-            print(displayed_output, end="" if displayed_output.endswith("\n") else "\n")
-        check_result = "passed" if result.returncode == 0 else "failed"
+        check["status"] = "unverified"
+        check["latest_evidence"] = None
+        check["latest_evidence_sha256"] = None
+    atomic_write_json(harness_dir / "tasks.json", state)
+    for check in checks:
+        before = source_snapshot(workspace, effective_policy(task, config))
+        attempt_id = uuid.uuid4().hex
+        attempt_path = attempts / f"{attempt_id}.json"
+        log_path = attempts / f"{attempt_id}.log"
+        attempt = {
+            "schema_version": SCHEMA_VERSION, "attempt_id": attempt_id,
+            "task_id": task_id, "check_id": check["id"], "status": "running",
+            "started_at": utc_now(), "source_snapshot": before,
+            "contract_fingerprint": contract_fingerprint(task),
+        }
+        check["latest_attempt"] = relative_path(attempt_path, workspace)
+        atomic_write_json(attempt_path, attempt)
+        atomic_write_json(harness_dir / "tasks.json", state)
+        expected_state_digest = file_sha256(harness_dir / "tasks.json")
+        try:
+            result = run_bounded(expand_argv(check["command"]), workspace, log_path,
+                                 timeout_seconds=check.get("timeout_seconds", 300))
+        except (OSError, KeyboardInterrupt) as exc:
+            attempt.update(status="interrupted" if isinstance(exc, KeyboardInterrupt) else "execution_error",
+                           finished_at=utc_now(), error=str(exc))
+            atomic_write_json(attempt_path, attempt)
+            if isinstance(exc, KeyboardInterrupt):
+                return 130
+            raise HarnessError(f"verification could not execute: {exc}") from exc
+        display_log(log_path)
+        reason = result.reason
+        drift = None
+        try:
+            state_changed = file_sha256(harness_dir / "tasks.json") != expected_state_digest
+        except OSError:
+            state_changed = True
+        try:
+            after = source_snapshot(workspace, effective_policy(task, config))
+            _, disk_config, disk_state = load_workspace(workspace)
+            disk_task = find_task(disk_state, task_id)
+            require_current_contract(disk_task)
+            if contract_fingerprint(disk_task) != attempt["contract_fingerprint"]:
+                drift = "acceptance contract changed during verification"
+            elif before != after:
+                drift = "source changed during verification"
+            elif state_changed or disk_state != state:
+                drift = "task state changed during verification"
+        except (HarnessError, OSError) as exc:
+            after = None
+            drift = f"post-run audit unavailable: {exc}"
+        check_result = "unverified" if drift or reason == "interrupted" else (
+            "passed" if result.returncode == 0 and reason == "exit" else "failed")
+        summary = drift or f"command exited with code {result.returncode}; reason={reason}"
+        attempt.update(status=check_result, finished_at=utc_now(), reason=reason,
+                       returncode=result.returncode, bytes_written=result.bytes_written,
+                       truncated=result.truncated, source_after=after, summary=summary)
+        atomic_write_json(attempt_path, attempt)
         evidence_path, evidence_sha256 = create_evidence(
-            workspace,
-            harness_dir,
-            task,
-            check,
-            check_result,
-            f"command exited with code {result.returncode}",
-            "command",
-            tool=check["command"][0],
-            exit_code=result.returncode,
-            output=output,
+            workspace, harness_dir, task, check, check_result, summary, "command",
+            tool=check["command"][0], exit_code=result.returncode, log_path=log_path,
+            binding={"source_snapshot": before, "source_after": after,
+                     "contract_fingerprint": attempt["contract_fingerprint"],
+                     "attempt": regular_file_metadata(attempt_path, workspace),
+                     "run_reason": reason},
         )
+        if drift and state_changed:
+            # Never overwrite a definition/state edited by the child with a stale copy.
+            raise GateError(summary)
         apply_check_result(state, config, task, check, check_result, evidence_path, evidence_sha256)
         atomic_write_json(harness_dir / "tasks.json", state)
         refresh_handoff(workspace, harness_dir, config, state)
-        if result.returncode != 0:
-            return 1
+        if check_result != "passed":
+            print(summary, file=sys.stderr)
+            return 130 if reason == "interrupted" else 1
     return 0
 
 
@@ -1769,7 +1655,9 @@ def command_record(
             raise HarnessError("passed browser evidence requires --tool")
         if not artifacts:
             raise HarnessError("passed browser evidence requires at least one --artifact")
+    require_current_contract(task)
     validated_artifacts = validate_artifacts(workspace, artifacts)
+    snapshot = source_snapshot(workspace, effective_policy(task, config))
     evidence_path, evidence_sha256 = create_evidence(
         workspace,
         harness_dir,
@@ -1780,6 +1668,8 @@ def command_record(
         check["type"],
         tool=tool,
         artifacts=validated_artifacts,
+        binding={"source_snapshot": snapshot, "contract_fingerprint": contract_fingerprint(task),
+                 "attestation": "Operator observation bound to workspace at recording time"},
     )
     apply_check_result(state, config, task, check, result, evidence_path, evidence_sha256)
     atomic_write_json(harness_dir / "tasks.json", state)
@@ -1790,41 +1680,13 @@ def command_record(
 
 def command_complete(workspace: Path, task_id: str) -> int:
     harness_dir, config, state = load_workspace(workspace)
-    if state.get("current_task_id") != task_id:
-        raise GateError(f"task {task_id} is not the current task")
     task = find_task(state, task_id)
-    if task["status"] != "in_progress":
-        raise GateError(f"task {task_id} is not in_progress")
-    not_passed = [check["id"] for check in task["acceptance"] if check["status"] != "passed"]
-    if not_passed:
-        raise GateError(f"acceptance checks not passed: {', '.join(not_passed)}")
-    for check in task["acceptance"]:
-        try:
-            validate_evidence_reference(workspace, harness_dir, task, check)
-        except StaleEvidenceError as exc:
-            raise GateError(f"acceptance {check['id']} lacks fresh evidence: {exc}") from exc
-        except HarnessError as exc:
-            raise HarnessError(f"acceptance {check['id']} lacks valid evidence: {exc}") from exc
-    try:
-        current_snapshot = git_snapshot(workspace)
-        baseline = task["git_baseline"]
-        if effective_policy(task, config)["require_git_for_completion"] and not baseline["available"]:
-            raise GateError("Git baseline is required for completion")
-        if baseline.get("available"):
-            changed_paths = changed_paths_since_baseline(workspace, baseline, current_snapshot)
-            outside = sorted(
-                path
-                for path in changed_paths
-                if not path_allowed(path, effective_policy(task, config)["allowed_paths"])
-            )
-            if outside:
-                raise GateError(
-                    f"new changes outside allowed_paths: {display_paths(outside)}"
-                )
-    except GitAuditError as exc:
-        raise GateError(str(exc)) from exc
-    if not effective_policy(task, config)["require_git_for_completion"]:
-        print(f"WARNING: {task_id} evidence is not Git-bound by policy")
+    audit = completion_audit(workspace, harness_dir, config, state, task)
+    if not audit["ready"]:
+        error = HarnessError if audit["exit_code"] == 2 else GateError
+        raise error("; ".join(audit["issues"]))
+    if not audit["git_bound_by_policy"]:
+        print(f"WARNING: {task_id} evidence is not Git-bound by policy; local source contents remain bound")
     task["status"] = "done"
     task["completed_at"] = utc_now()
     state["current_task_id"] = None
@@ -1871,7 +1733,7 @@ def migrated_policy(policy: Dict[str, Any]) -> Dict[str, Any]:
         "max_consecutive_failures": policy["max_consecutive_failures"],
         "allowed_paths": list(policy["allowed_paths"]),
         "approval_required_operations": list(policy["approval_required_operations"]),
-        "require_git_for_completion": True,
+        "require_git_for_completion": policy.get("require_git_for_completion", True),
     }
 
 
@@ -1884,19 +1746,29 @@ def command_migrate(workspace: Path, dry_run: bool, note: Optional[str]) -> int:
     if versions == (SCHEMA_VERSION, SCHEMA_VERSION):
         validate_config(source_config)
         validate_tasks(source_state)
-        print("Harness is already schema v2.")
+        print("Harness is already schema v3.")
         return 0
-    if versions != (1, 1):
-        raise HarnessError("config.json and tasks.json must both be schema v1 or both be schema v2")
-    validate_v1_config(source_config)
-    validate_v1_tasks(source_state)
+    if versions not in {(1, 1), (2, 2)}:
+        raise HarnessError("config.json and tasks.json must have matching schema v1, v2 or v3")
+    source_version = versions[0]
+    if source_version == 1:
+        validate_v1_config(source_config)
+        validate_v1_tasks(source_state)
+    else:
+        check_config = copy.deepcopy(source_config)
+        check_config["schema_version"] = SCHEMA_VERSION
+        check_config["policy"]["schema_version"] = SCHEMA_VERSION
+        check_state = copy.deepcopy(source_state)
+        check_state["schema_version"] = SCHEMA_VERSION
+        validate_config(check_config)
+        validate_tasks(check_state)
     active = next(
         (task for task in source_state.get("tasks", []) if task.get("status") in {"in_progress", "blocked"}),
         None,
     )
     clean_note = note.strip() if isinstance(note, str) else ""
     if active is not None and not clean_note:
-        raise HarnessError("migrating an active or blocked v1 task requires --note")
+        raise HarnessError("migrating an active or blocked task requires --note to acknowledge its current acceptance definition")
 
     target_config = copy.deepcopy(source_config)
     target_config["schema_version"] = SCHEMA_VERSION
@@ -1908,10 +1780,14 @@ def command_migrate(workspace: Path, dry_run: bool, note: Optional[str]) -> int:
         status = task.get("status")
         if status in {"in_progress", "blocked"}:
             task["started_at"] = task.get("started_at") or migration_time
-            task["git_baseline"] = git_snapshot(workspace)
-            task["policy_baseline"] = copy.deepcopy(target_config["policy"])
+            if source_version == 1:
+                task["legacy_baselines"] = {name: copy.deepcopy(task.get(name))
+                                            for name in ("git_baseline", "policy_baseline")}
+                task["git_baseline"] = git_snapshot(workspace)
+                task["policy_baseline"] = migrated_policy(task.get("policy_baseline") or source_config["policy"])
+            freeze_contract(task)
             task.setdefault("migration_history", []).append(
-                {"timestamp": migration_time, "from_schema": 1, "note": clean_note}
+                {"timestamp": migration_time, "from_schema": source_version, "note": clean_note}
             )
         if status != "done":
             for check in task.get("acceptance", []):
@@ -1953,17 +1829,17 @@ def command_migrate(workspace: Path, dry_run: bool, note: Optional[str]) -> int:
                     }
                 )
     if dry_run:
-        print("Harness would migrate schema v1 to v2; no files changed.")
+        print(f"Harness would migrate schema v{source_version} to v3; no files changed.")
         return 0
     migration_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    migration_dir = harness_dir / "migrations" / f"v1-to-v2-{migration_stamp}"
-    atomic_write_json(migration_dir / "config.v1.json", source_config)
-    atomic_write_json(migration_dir / "tasks.v1.json", source_state)
+    migration_dir = harness_dir / "migrations" / f"v{source_version}-to-v3-{migration_stamp}"
+    atomic_write_json(migration_dir / f"config.v{source_version}.json", source_config)
+    atomic_write_json(migration_dir / f"tasks.v{source_version}.json", source_state)
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "migrated_at": migration_time,
-        "source_config_sha256": file_sha256(migration_dir / "config.v1.json"),
-        "source_tasks_sha256": file_sha256(migration_dir / "tasks.v1.json"),
+        "source_config_sha256": file_sha256(migration_dir / f"config.v{source_version}.json"),
+        "source_tasks_sha256": file_sha256(migration_dir / f"tasks.v{source_version}.json"),
         "active_task_rebaseline_note": clean_note or None,
         "legacy_evidence_files": legacy_evidence_files,
     }
@@ -1971,7 +1847,424 @@ def command_migrate(workspace: Path, dry_run: bool, note: Optional[str]) -> int:
     atomic_write_json(harness_dir / "config.json", target_config)
     atomic_write_json(harness_dir / "tasks.json", target_state)
     refresh_handoff(workspace, harness_dir, target_config, target_state)
-    print(f"Migrated Harness schema v1 to v2; archive={migration_dir.relative_to(workspace)}")
+    print(f"Migrated Harness schema v{source_version} to v3; archive={migration_dir.relative_to(workspace)}")
+    return 0
+
+
+def validate_timeout(value: Any, field: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+        raise HarnessError(f"{field} must be a finite positive number of seconds")
+
+
+def canonical_digest(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def task_definition(task: Dict[str, Any]) -> Dict[str, Any]:
+    checks = []
+    for check in task["acceptance"]:
+        fields = ("id", "type", "instruction", "command", "steps", "timeout_seconds")
+        definition = {key: copy.deepcopy(check[key]) for key in fields if key in check}
+        if check["type"] == "command":
+            definition.setdefault("timeout_seconds", 300)
+        checks.append(definition)
+    return {"id": task["id"], "title": task["title"], "acceptance": checks}
+
+
+def contract_fingerprint(task: Dict[str, Any]) -> str:
+    return canonical_digest(task_definition(task))
+
+
+def freeze_contract(task: Dict[str, Any]) -> None:
+    task["contract_baseline"] = {"definition": task_definition(task), "fingerprint": contract_fingerprint(task)}
+
+
+def require_current_contract(task: Dict[str, Any]) -> None:
+    baseline = task.get("contract_baseline")
+    if (not isinstance(baseline, dict)
+            or canonical_digest(baseline.get("definition")) != baseline.get("fingerprint")
+            or contract_fingerprint(task) != baseline.get("fingerprint")):
+        raise GateError("acceptance contract changed or missing; use task revise with --note")
+
+
+def snapshot_excluded(path: str) -> bool:
+    if ".git" in Path(path).parts:
+        return True
+    if path == ".harness/tasks.json" or path == ".harness/HANDOFF.md":
+        return True
+    return any(path == prefix or path.startswith(prefix + "/") for prefix in (
+        ".git", ".harness/evidence", ".harness/migrations", ".harness/attempts",
+        ".harness/artifacts", ".harness/reports", ".harness/logs", ".harness/__pycache__"))
+
+
+def gitlink_entries(workspace: Path, path: str = ".") -> Dict[str, str]:
+    result = run_git(workspace, ["ls-files", "--stage", "-z", "--", path], "gitlink inventory")
+    links = {}
+    for record in result.stdout.split("\0"):
+        if not record:
+            continue
+        header, separator, relative = record.partition("\t")
+        fields = header.split()
+        if not separator or len(fields) != 3:
+            raise GitAuditError("Git returned malformed index entries")
+        mode, oid, stage = fields
+        if mode == "160000":
+            if stage != "0":
+                raise GitAuditError(f"unmerged submodule cannot be snapshotted: {relative}")
+            if not safe_git_relative_path(relative):
+                raise GitAuditError(f"unsafe submodule path: {relative}")
+            links[relative] = oid
+    return links
+
+
+def submodule_fingerprint(workspace: Path, path: str, gitlink_oid: str) -> str:
+    submodule = workspace / path
+    if submodule.is_symlink() or not submodule.is_dir() or not (submodule / ".git").exists():
+        raise GitAuditError(f"uninitialized submodule cannot be verified: {path}; initialize it first")
+    top = run_git(submodule, ["rev-parse", "--show-toplevel"], f"submodule root {path}")
+    if Path(top.stdout.strip()).resolve() != submodule.resolve():
+        raise GitAuditError(f"uninitialized submodule cannot be verified: {path}; initialize it first")
+    head = run_git(submodule, ["rev-parse", "--verify", "HEAD"], f"submodule HEAD {path}").stdout.strip()
+    if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", head) is None:
+        raise GitAuditError(f"invalid submodule HEAD: {path}")
+    flags = run_git(submodule, ["ls-files", "-v", "-z"], f"submodule index flags {path}")
+    if any(record and (record[0].islower() or record[0] == "S") for record in flags.stdout.split("\0")):
+        raise GitAuditError(f"submodule has hidden index flags; cannot prove it clean: {path}")
+    status = run_git(submodule, ["status", "--porcelain=v1", "-z", "--untracked-files=all",
+                                 "--ignore-submodules=none"], f"submodule cleanliness {path}")
+    if status.stdout:
+        raise GitAuditError(f"dirty submodule cannot be verified: {path}; restore a clean checkout first")
+    # Recursion checks initialized nested gitlinks too; content hashing also binds the
+    # actual files consumed by verification, independently of cached Git stat data.
+    snapshot = source_snapshot(submodule, {"require_git_for_completion": True})
+    content_digest = snapshot["fingerprint"].split(":", 1)[1]
+    return f"gitlink:{gitlink_oid}:head:{head}:sha256:{content_digest}"
+
+
+def filesystem_source_paths(workspace: Path, root: Path) -> List[str]:
+    paths = []
+
+    def inventory_error(exc: OSError) -> None:
+        raise GitAuditError(f"source inventory could not read a directory: {exc}") from exc
+
+    for directory, dirs, names in os.walk(root, followlinks=False, onerror=inventory_error):
+        relative_root = Path(directory).relative_to(workspace)
+        dirs[:] = [name for name in dirs if not snapshot_excluded((relative_root / name).as_posix())]
+        symlinks = [name for name in dirs if (Path(directory) / name).is_symlink()]
+        dirs[:] = [name for name in dirs if name not in symlinks]
+        paths.extend((relative_root / name).as_posix() for name in names + symlinks)
+    return paths
+
+
+def source_snapshot(workspace: Path, policy: Dict[str, Any]) -> Dict[str, Any]:
+    git = git_snapshot(workspace)
+    links = {}
+    if git["available"]:
+        result = run_git(workspace, ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "."],
+                         "source inventory")
+        paths = sorted(set(path for path in result.stdout.split("\0") if path))
+        links = gitlink_entries(workspace)
+        method = "git-tracked-and-nonignored"
+    else:
+        if policy["require_git_for_completion"]:
+            raise GateError("Git is required for source verification")
+        paths = filesystem_source_paths(workspace, workspace)
+        method = "filesystem-no-git"
+    harness_dir = workspace / ".harness"
+    if harness_dir.exists() or harness_dir.is_symlink():
+        require_safe_directory(harness_dir, workspace, create=False)
+        # Harness itself is part of the verifier's trust boundary even when the host
+        # repository ignores the entire directory. Only fixed generated outputs opt out.
+        paths.extend(filesystem_source_paths(workspace, harness_dir))
+    fingerprints = {}
+    for path in sorted(set(paths)):
+        if not safe_git_relative_path(path):
+            raise GitAuditError(f"unsafe source path: {path}")
+        if not snapshot_excluded(path):
+            fingerprints[path] = (submodule_fingerprint(workspace, path, links[path])
+                                  if path in links else workspace_path_fingerprint(workspace, path))
+    index_fingerprints = {}
+    if git["available"]:
+        result = run_git(workspace, ["ls-files", "--stage", "-z", "--", "."], "source index inventory")
+        entries = {}
+        for record in result.stdout.split("\0"):
+            if not record:
+                continue
+            header, separator, path = record.partition("\t")
+            if not separator or not safe_git_relative_path(path):
+                raise GitAuditError("Git returned malformed source index entries")
+            if not snapshot_excluded(path):
+                entries.setdefault(path, []).append(header)
+        index_fingerprints = {path: canonical_digest(headers) for path, headers in entries.items()}
+    identity = {"available": git["available"], "branch": git["branch"], "head": git["head"],
+                "workspace_prefix": git_workspace_prefix(workspace) if git["available"] else None,
+                "index_fingerprints": index_fingerprints}
+    return {"method": method, "fingerprint": canonical_digest(fingerprints), "files": fingerprints,
+            "git": identity}
+
+
+def display_log(path: Path) -> None:
+    if path.is_file():
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(65536)
+                if not chunk:
+                    break
+                print(decode_command_output(chunk), end="")
+
+
+def validate_source_snapshot(value: Any, field: str) -> None:
+    if not isinstance(value, dict):
+        raise HarnessError(f"{field} must be an object")
+    if value.get("method") not in {"git-tracked-and-nonignored", "filesystem-no-git"}:
+        raise HarnessError(f"{field}.method is invalid")
+    files = value.get("files")
+    if not isinstance(files, dict) or not all(
+        isinstance(path, str) and safe_git_relative_path(path) and isinstance(digest, str)
+        and (valid_worktree_fingerprint(digest) or re.fullmatch(
+            r"gitlink:[0-9a-f]{40,64}:head:[0-9a-f]{40,64}:sha256:[0-9a-f]{64}", digest))
+        for path, digest in files.items()
+    ):
+        raise HarnessError(f"{field}.files must be a safe source fingerprint manifest")
+    if value.get("fingerprint") != canonical_digest(files):
+        raise HarnessError(f"{field}.fingerprint does not match its files")
+    identity = value.get("git")
+    if not isinstance(identity, dict) or not isinstance(identity.get("available"), bool):
+        raise HarnessError(f"{field}.git must be a stable Git identity")
+    index = identity.get("index_fingerprints")
+    if not isinstance(index, dict) or not all(
+        isinstance(path, str) and safe_git_relative_path(path) and isinstance(digest, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", digest) for path, digest in index.items()
+    ):
+        raise HarnessError(f"{field}.git.index_fingerprints is invalid")
+    if identity["available"]:
+        require_string(identity.get("branch"), f"{field}.git.branch")
+        head = identity.get("head")
+        if head is not None and (not isinstance(head, str) or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", head)):
+            raise HarnessError(f"{field}.git.head is invalid")
+        prefix = identity.get("workspace_prefix")
+        if not isinstance(prefix, str) or (prefix and not safe_git_relative_path(prefix)):
+            raise HarnessError(f"{field}.git.workspace_prefix is invalid")
+    elif any(identity.get(name) is not None for name in ("branch", "head", "workspace_prefix")) or index:
+        raise HarnessError(f"{field}.git unavailable identity must not contain Git state")
+
+
+def source_snapshot_change_reason(before: Dict[str, Any], after: Dict[str, Any]) -> str:
+    reasons = []
+    old_git, new_git = before["git"], after["git"]
+    for key, label in (("available", "Git availability"), ("workspace_prefix", "Git workspace location"),
+                       ("branch", "Git branch"), ("head", "Git HEAD")):
+        if old_git.get(key) != new_git.get(key):
+            reasons.append(f"{label} changed from {old_git.get(key)} to {new_git.get(key)}")
+    paths = sorted(set(changed_manifest_paths(before["files"], after["files"]))
+                   | set(changed_manifest_paths(old_git["index_fingerprints"], new_git["index_fingerprints"])))
+    if paths:
+        reasons.append("changed paths: " + display_paths(paths))
+    return "; ".join(reasons) or "source inventory changed"
+
+
+def evidence_freshness(workspace: Path, harness_dir: Path, task: Dict[str, Any],
+                       check: Dict[str, Any], snapshot: Dict[str, Any]) -> None:
+    evidence = validate_evidence_reference(workspace, harness_dir, task, check)
+    if evidence is None:
+        raise HarnessError("passed acceptance requires valid evidence")
+    if evidence.get("schema_version") != SCHEMA_VERSION or "source_snapshot" not in evidence:
+        subject = evidence.get("verification_subject")
+        origin = (f"legacy verification subject v{subject['version']}" if isinstance(subject, dict)
+                  else f"legacy schema v{evidence.get('schema_version')}")
+        raise StaleEvidenceError(f"stale evidence: {origin} has no v3 acceptance binding; re-run verification")
+    if evidence.get("contract_fingerprint") != contract_fingerprint(task):
+        raise StaleEvidenceError("stale evidence: evidence acceptance contract is stale; re-run verification")
+    if evidence.get("source_snapshot") != snapshot:
+        raise StaleEvidenceError("stale evidence: evidence source snapshot is stale; "
+                                 + source_snapshot_change_reason(evidence["source_snapshot"], snapshot)
+                                 + "; re-run verification")
+    if check["type"] == "command":
+        if evidence.get("source_after") != snapshot or evidence.get("run_reason") != "exit":
+            raise GateError("command did not finish against a consistent source snapshot")
+        attempt = evidence.get("attempt")
+        if not isinstance(attempt, dict):
+            raise GateError("command evidence has no attempt")
+        attempt_path = validate_file_metadata(attempt, workspace, "evidence attempt", harness_dir / "attempts" / task["id"])
+        if check.get("latest_attempt") != relative_path(attempt_path, workspace):
+            raise GateError("command evidence is not the latest attempt")
+        record = read_json(attempt_path)
+        for candidate in attempt_path.parent.glob("*.json"):
+            if candidate.is_symlink():
+                raise GateError("attempt record must not be a symbolic link")
+            other = read_json(candidate)
+            if (other.get("check_id") == check["id"] and other.get("task_id") == task["id"]
+                    and other.get("contract_fingerprint") == contract_fingerprint(task)
+                    and other.get("started_at", "") > record.get("started_at", "")):
+                raise GateError("a newer verification attempt supersedes this evidence")
+        if (record.get("status") != "passed" or record.get("returncode") != 0
+                or record.get("reason") != "exit" or record.get("source_snapshot") != snapshot
+                or record.get("source_after") != snapshot
+                or record.get("contract_fingerprint") != contract_fingerprint(task)
+                or record.get("task_id") != task["id"] or record.get("check_id") != check["id"]):
+            raise GateError("command attempt is incomplete or inconsistent")
+    elif not isinstance(evidence.get("attestation"), str):
+        raise GateError("observation evidence requires attestation provenance")
+
+
+def completion_audit(workspace: Path, harness_dir: Path, config: Dict[str, Any],
+                     state: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
+    issues = []
+    integrity_errors = []
+    if task["status"] == "done":
+        issues.append("historical done task; cannot be consumed as an active task")
+    elif task["status"] != "in_progress":
+        issues.append(f"task {task['id']} is not in_progress")
+    if state.get("current_task_id") != task["id"]:
+        issues.append(f"task {task['id']} is not the current task")
+    try:
+        require_current_contract(task)
+    except HarnessError as exc:
+        issues.append(str(exc))
+    snapshot = None
+    try:
+        snapshot = source_snapshot(workspace, effective_policy(task, config))
+    except (HarnessError, OSError) as exc:
+        issues.append(str(exc))
+    checks = []
+    for check in task["acceptance"]:
+        check_issues = []
+        details = {"instruction": check["instruction"], "evidence_valid": False,
+                   "evidence_path": check.get("latest_evidence"), "provenance": None,
+                   "summary": None, "artifacts": []}
+        if check["status"] != "passed":
+            check_issues.append(f"acceptance checks not passed: {check['id']} ({check['status']})")
+        elif snapshot is not None:
+            try:
+                evidence_freshness(workspace, harness_dir, task, check, snapshot)
+                evidence = read_json(resolve_inside(check["latest_evidence"], workspace, "evidence path"))
+                details.update(evidence_valid=True, provenance=evidence["provenance"],
+                               summary=evidence["summary"], artifacts=evidence["artifacts"])
+            except (HarnessError, OSError, TypeError) as exc:
+                check_issues.append(f"acceptance {check['id']} lacks valid evidence: {exc}")
+                if not isinstance(exc, GateError):
+                    integrity_errors.append(check_issues[-1])
+        issues.extend(check_issues)
+        checks.append({"id": check["id"], "type": check["type"], "status": check["status"],
+                       "ready": not check_issues and snapshot is not None, "issues": check_issues, **details})
+    git_next_command = None
+    try:
+        baseline = task.get("git_baseline")
+        current = git_snapshot(workspace)
+        if baseline is None:
+            raise GateError("Git baseline is missing")
+        if effective_policy(task, config)["require_git_for_completion"] and not baseline["available"]:
+            raise GateError("Git baseline is required for completion")
+        if baseline["available"]:
+            changed = changed_paths_since_baseline(workspace, baseline, current)
+            outside = [path for path in changed if not snapshot_excluded(path)
+                       and not path_allowed(path, effective_policy(task, config)["allowed_paths"])]
+            if outside:
+                raise GateError(f"new changes outside allowed_paths: {display_paths(outside)}")
+    except (HarnessError, OSError) as exc:
+        issues.append(str(exc))
+        git_next_command = ("git status --short" if "outside allowed_paths" in str(exc)
+                            or "Git branch changed" in str(exc)
+                            else "python3 .harness/harness.py doctor")
+    if task["status"] == "blocked":
+        next_command = f"python3 .harness/harness.py unblock {task['id']} --note '<what changed>'"
+    elif task["status"] == "pending":
+        next_command = "python3 .harness/harness.py next"
+    elif task["status"] == "done":
+        next_command = None
+    elif not issues:
+        next_command = f"python3 .harness/harness.py complete {task['id']}"
+    elif any("contract" in issue for issue in issues):
+        next_command = f"python3 .harness/harness.py task revise {task['id']} --from <definition.json> --note '<reason>'"
+    elif git_next_command and (all(check["ready"] for check in checks)
+                               or git_next_command == "python3 .harness/harness.py doctor"):
+        next_command = git_next_command
+    elif any(check["type"] == "command" and not check["ready"] for check in checks):
+        next_command = f"python3 .harness/harness.py verify {task['id']}"
+    else:
+        next_command = f"python3 .harness/harness.py record {task['id']} <check-id> --result <result> --summary '<observation>'"
+    return {"schema_version": SCHEMA_VERSION, "task_id": task["id"], "task_status": task["status"],
+            "historical": task["status"] == "done", "ready": not issues, "checks": checks,
+            "issues": issues, "next_command": next_command,
+            "exit_code": 2 if integrity_errors else (1 if issues else 0),
+            "integrity_errors": integrity_errors,
+            "git_bound_by_policy": task_requires_git(task)}
+
+
+def command_report(workspace: Path, task_id: str, output_format: str) -> int:
+    harness_dir, config, state = load_workspace(workspace)
+    result = completion_audit(workspace, harness_dir, config, state, find_task(state, task_id))
+    if output_format == "json":
+        print(json.dumps(result, ensure_ascii=True, indent=2))
+    else:
+        render = markdown_inline_text if output_format == "markdown" else escape_control_text
+        prefix = "# " if output_format == "markdown" else ""
+        print(f"{prefix}{task_id} [{result['task_status']}] — {'ready' if result['ready'] else 'not ready'}")
+        for check in result["checks"]:
+            print(f"- {check['id']}: {check['status']} — {render(check['instruction'])}")
+            if check["evidence_path"]:
+                label = check["provenance"] if check["evidence_valid"] else "unverified or stale"
+                print(f"  Evidence ({label}): {render(check['evidence_path'])}")
+            if check["summary"]:
+                print(f"  Summary: {render(check['summary'])}")
+            for artifact in check["artifacts"]:
+                print(f"  Artifact: {render(artifact['path'])}")
+        for issue in result["issues"]:
+            print(f"- {render(issue)}")
+        if result["next_command"]:
+            print(f"Next: {render(result['next_command'])}")
+    return result["exit_code"]
+
+
+def parse_task_definition(path: Path) -> Dict[str, Any]:
+    definition = read_json(path)
+    if set(definition) != {"id", "title", "acceptance"}:
+        raise HarnessError("task definition requires only id, title, acceptance; runtime state/evidence fields are forbidden")
+    require_identifier(definition["id"], "task.id")
+    require_string(definition["title"], "task.title")
+    if not isinstance(definition["acceptance"], list) or not definition["acceptance"]:
+        raise HarnessError("acceptance must be a non-empty array")
+    task = copy.deepcopy(definition)
+    task["status"] = "pending"
+    for check in task["acceptance"]:
+        if not isinstance(check, dict):
+            raise HarnessError("acceptance entries must be objects")
+        allowed = {"id", "type", "instruction", "command", "timeout_seconds"} if check.get("type") == "command" else {"id", "type", "instruction", "steps"}
+        if set(check) - allowed:
+            raise HarnessError("acceptance definition contains forbidden runtime or unknown fields")
+        check.update(status="not_run", consecutive_failures=0, latest_evidence=None, latest_evidence_sha256=None)
+    validate_tasks({"schema_version": SCHEMA_VERSION, "current_task_id": None, "tasks": [task]})
+    return task
+
+
+def command_task(workspace: Path, operation: str, definition_path: Path,
+                 task_id: Optional[str], note: Optional[str]) -> int:
+    harness_dir, config, state = load_workspace(workspace)
+    definition = parse_task_definition(definition_path)
+    if operation == "add":
+        if any(task["id"] == definition["id"] for task in state["tasks"]):
+            raise HarnessError(f"duplicate task id: {definition['id']}")
+        state["tasks"].append(definition)
+    else:
+        task = find_task(state, task_id)
+        if task["status"] not in {"pending", "in_progress"}:
+            raise GateError("task revise requires pending or in_progress status")
+        if definition["id"] != task_id:
+            raise HarnessError("revision definition id must match the requested task")
+        require_string(note, "revision note")
+        task.setdefault("revision_history", []).append({"timestamp": utc_now(), "note": note.strip(),
+                                                        "definition": task_definition(task),
+                                                        "previous_acceptance": copy.deepcopy(task["acceptance"])})
+        task["title"] = definition["title"]
+        task["acceptance"] = definition["acceptance"]
+        for check in task["acceptance"]:
+            check["status"] = "unverified"
+        freeze_contract(task)
+    validate_tasks(state)
+    atomic_write_json(harness_dir / "tasks.json", state)
+    refresh_handoff(workspace, harness_dir, config, state)
+    print(f"Task {operation}: {definition['id']}")
     return 0
 
 
@@ -1979,6 +2272,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=None)
     subparsers = parser.add_subparsers(dest="command", required=True)
+    init_parser = subparsers.add_parser("init")
+    init_parser.add_argument("--agent", choices=("codex", "claude", "generic"))
+    init_parser.add_argument("--dry-run", action="store_true")
+    report_parser = subparsers.add_parser("report")
+    report_parser.add_argument("task_id")
+    report_parser.add_argument("--format", choices=("text", "json", "markdown"), default="text")
+    task_parser = subparsers.add_parser("task")
+    task_commands = task_parser.add_subparsers(dest="task_command", required=True)
+    add_parser = task_commands.add_parser("add")
+    add_parser.add_argument("--from", dest="definition_path", type=Path, required=True)
+    revise_parser = task_commands.add_parser("revise")
+    revise_parser.add_argument("task_id")
+    revise_parser.add_argument("--from", dest="definition_path", type=Path, required=True)
+    revise_parser.add_argument("--note", required=True)
     subparsers.add_parser("doctor")
     subparsers.add_parser("status")
     subparsers.add_parser("next")
@@ -2012,6 +2319,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     default_workspace = Path(__file__).resolve().parent.parent
     workspace = (args.workspace or default_workspace).resolve()
     try:
+        if args.command == "init":
+            from harness_init import initialize
+            print(initialize(workspace, agent=args.agent, dry_run=args.dry_run,
+                             source_dir=Path(__file__).parent))
+            return 0
+        if args.command == "report":
+            return command_report(workspace, args.task_id, args.format)
+        if args.command == "task":
+            return command_task(workspace, args.task_command, args.definition_path,
+                                getattr(args, "task_id", None), getattr(args, "note", None))
         if args.command == "doctor":
             return command_doctor(workspace)
         if args.command == "status":
@@ -2036,8 +2353,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return command_migrate(workspace, args.dry_run, args.note)
         raise HarnessError(f"unsupported command: {args.command}")
     except HarnessError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {escape_control_text(str(exc))}", file=sys.stderr)
         return exc.exit_code
+    except (ValueError, OSError) as exc:
+        print(f"ERROR: {escape_control_text(str(exc))}", file=sys.stderr)
+        return 2
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)
         return 130

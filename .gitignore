@@ -3,3 +3,7 @@ __pycache__/
 .ruff_cache/
 dist/
 .DS_Store
+examples/todo/.harness/artifacts/
+examples/todo/.harness/evidence/
+examples/todo/.harness/attempts/
+examples/todo/.harness/reports/
