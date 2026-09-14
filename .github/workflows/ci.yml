@@ -19,6 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        id: setup_python
         with:
           python-version: ${{ matrix.python-version }}
       - uses: actions/setup-node@v4
@@ -26,6 +27,22 @@ jobs:
           node-version: "lts/*"
       - name: Python unit tests
         run: python -m unittest discover -s tests -v
+      - name: Real release smoke check
+        id: release_smoke
+        if: ${{ !cancelled() && steps.setup_python.outcome == 'success' }}
+        run: python scripts/check_release.py --ref "${{ github.sha }}" --version v0.0.0-ci --output-dir release-smoke
+      - name: Upload release smoke diagnostics
+        if: ${{ failure() && steps.release_smoke.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-smoke-${{ runner.os }}-py${{ matrix.python-version }}
+          path: |
+            release-smoke/
+            !release-smoke/smoke-project/.git/
+            !release-smoke/smoke-project/.git/**
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
       - name: Install lint dependency
         run: python -m pip install ruff==0.15.12
       - name: Ruff
