@@ -3,10 +3,9 @@
 [简体中文](usage-guide.zh-CN.md) · [README](../README.md) ·
 [CLI reference](cli-reference.md) · [Documentation index](README.md)
 
-These four cases use schema v3. Run them from a current source checkout; the
+These four cases use v0.2.0-beta.2 and schema v3. Run them from that source tag; the
 `examples/quickstart` and `examples/todo` fixtures are not in the published runtime ZIP.
-The published v0.2.0-beta.1 runtime supports the same v3 workflow, while the current
-source also contains unreleased hardening and installs `.harness/LICENSE`.
+The v0.2.0-beta.2 runtime includes Git/runner hardening and installs `.harness/LICENSE`.
 
 In installed projects, run `python3 .harness/harness.py ...` from the project root.
 When invoking the template from elsewhere, put the global `--workspace PATH` before the

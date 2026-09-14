@@ -3,7 +3,8 @@
 [English](cli-reference.md) · [README](../README.zh-CN.md) ·
 [实战指南](usage-guide.zh-CN.md) · [文档索引](README.zh-CN.md)
 
-本文覆盖 schema v3 的全部 parser 接口。CLI 在中英文流程中都输出英文；没有语言或 locale 选项。
+本文覆盖 v0.2.0-beta.2 和 schema v3 的全部 parser 接口。CLI 在中英文流程中都输出英文；
+没有语言或 locale 选项。
 
 ## 调用与路径规则
 
@@ -80,12 +81,12 @@ python3 template/.harness/harness.py [--workspace PATH] init
 目标目录须已存在。`--agent codex`/`generic` 目标是 `AGENTS.md`；`claude` 目标是
 `CLAUDE.md`；省略则不写宿主指令。`--dry-run` 预检并列出变化。
 
-当前未发布源码在写入前一次性预检同一来源目录中的 `harness.py`、`harness_init.py`、
+v0.2.0-beta.2 在写入前一次性预检同一来源目录中的 `harness.py`、`harness_init.py`、
 `harness_runner.py` 和 `LICENSE`。全新安装把这四个文件放入 `.harness/`，并创建配置、
-空任务与交接，不改变项目根许可证。已发布 beta.1 的历史 ZIP/运行时只有三个 Python 模块，
+空任务与交接，不改变项目根许可证。历史 beta.1 ZIP/运行时只有三个 Python 模块，
 没有运行时许可证。
 
-重复 init 验证整套运行时和状态，也可以补上一个缺失的托管指令区块，但不升级。当前源码遇到
+重复 init 验证整套运行时和状态，也可以补上一个缺失的托管指令区块，但不升级。v0.2.0-beta.2 遇到
 旧 v3 安装缺 `.harness/LICENSE`、运行时字节不同、局部安装、符号链接、冲突/残缺托管区块时，
 会要求显式升级。
 

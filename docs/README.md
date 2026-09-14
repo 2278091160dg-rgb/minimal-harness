@@ -21,10 +21,10 @@ agent instructions are not localized.
 
 ## Version scope
 
-The latest stable release is **v0.1.1**. The published schema v3 prerelease is
-**v0.2.0-beta.1**. The current development revision also contains unreleased
-hardening and packaging changes. Follow the version labels in the README; a
-published ZIP does not automatically contain changes from the development branch.
+The latest stable release is **v0.1.1**. The current schema v3 prerelease is
+**v0.2.0-beta.2**, including Git/runner hardening and `.harness/LICENSE` in the runtime
+ZIP. The earlier **v0.2.0-beta.1** is historical and lacks those updates. Follow the
+version labels in the README; source examples are separate from the runtime ZIP.
 
 ## Maintainer history
 

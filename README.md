@@ -17,16 +17,16 @@ matches the current source and acceptance definition.
 
 | Version | Use it for | Scope |
 | --- | --- | --- |
-| [v0.2.0-beta.1](https://github.com/2278091160dg-rgb/minimal-harness/releases/tag/v0.2.0-beta.1) | Published schema v3 beta | Includes `init`, `task add/revise`, `report`, and source/contract freshness. Its ZIP does **not** contain a runtime `LICENSE` or the unreleased Git/runner hardening in this source revision. |
-| Current source/PR | Evaluating this unreleased hardening revision | Fresh `init` and explicit upgrades copy `harness.py`, `harness_init.py`, `harness_runner.py`, and `.harness/LICENSE`. Source examples and the release checker are included. |
+| [v0.2.0-beta.2](https://github.com/2278091160dg-rgb/minimal-harness/releases/tag/v0.2.0-beta.2) | Current schema v3 prerelease | Includes `init`, `task add/revise`, `report`, source/contract freshness, Git/runner hardening, and the runtime `LICENSE`. Fresh `init` and explicit upgrades copy all four runtime files. |
+| [v0.2.0-beta.1](https://github.com/2278091160dg-rgb/minimal-harness/releases/tag/v0.2.0-beta.1) | Historical schema v3 beta | Its ZIP lacks `.harness/LICENSE` and the Git/runner hardening shipped in beta.2. Use the explicit upgrade procedure for an existing installation. |
 | [v0.1.1](https://github.com/2278091160dg-rgb/minimal-harness/releases/tag/v0.1.1) | Older stable workflow | Schema v2; no `init`, `task add/revise`, or `report`. Do not use the v3 command guide with it. |
 
-This documentation describes schema v3. Use beta.1 to try its published behavior; use
-the current source checkout when evaluating fixes in this PR.
+This documentation describes v0.2.0-beta.2 and schema v3. Its tagged source tree also
+contains examples and the release checker; those are separate from the runtime ZIP.
 
 ## Install the published beta ZIP
 
-These commands download the two real beta.1 assets, verify the archive, extract it into
+These commands download the two beta.2 assets, verify the archive, extract it into
 a staging directory, and initialize an **existing** project. They never unpack over the
 project's `.harness/` directory. Change only the final project path.
 
@@ -35,7 +35,7 @@ macOS or Linux:
 ```bash
 (
 set -eu
-mh_version=v0.2.0-beta.1
+mh_version=v0.2.0-beta.2
 mh_base="https://github.com/2278091160dg-rgb/minimal-harness/releases/download/$mh_version"
 mh_stage="$(mktemp -d)"
 curl -fL "$mh_base/minimal-harness-$mh_version.zip" -o "$mh_stage/minimal-harness-$mh_version.zip"
@@ -55,7 +55,7 @@ PowerShell:
 
 ```powershell
 $ErrorActionPreference = "Stop"
-$Version = "v0.2.0-beta.1"
+$Version = "v0.2.0-beta.2"
 $Base = "https://github.com/2278091160dg-rgb/minimal-harness/releases/download/$Version"
 $Stage = Join-Path ([IO.Path]::GetTempPath()) ("minimal-harness-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $Stage | Out-Null
@@ -72,10 +72,9 @@ py -3 "$Runtime/.harness/harness.py" --workspace "C:\path\to\project" init --age
 if ($LASTEXITCODE -ne 0) { throw "Minimal Harness init failed with exit $LASTEXITCODE" }
 ```
 
-The verified beta.1 digest is
-`f57b733a8eb4e62a05a0bf6ebcf66fc7972b9ec91dec47e1697252d5a1a81567`.
-The downloaded `SHA256SUMS.txt` remains the file to check. The beta ZIP contains a staged
-`.harness/` tree, not the examples and not `.harness/LICENSE`.
+Verify the archive against the downloaded `SHA256SUMS.txt`. The beta.2 ZIP contains a
+staged `.harness/` tree including `.harness/LICENSE`; examples are available in the
+tagged source tree only.
 
 Use `--agent claude` for `CLAUDE.md`, `--agent generic` for generic `AGENTS.md`, or omit
 `--agent` to install only the runtime. `init --dry-run` previews changes. Existing
@@ -85,7 +84,7 @@ does not upgrade state, initialize Git, or install dependencies.
 
 ## Try a complete source example
 
-From a current source checkout, create a disposable project:
+From the root of a v0.2.0-beta.2 source checkout, create a disposable project:
 
 ```bash
 mkdir ../harness-demo
@@ -204,14 +203,17 @@ Task states are `pending / in_progress / blocked / done`; check states are
 `0` success/ready, `1` failed acceptance or unmet/stale gate, `2` invalid usage/config or
 damaged evidence, and `130` interruption.
 
-## Upgrade explicitly to this unreleased revision
+## Upgrade explicitly to v0.2.0-beta.2
 
-Back up the installed `.harness/` and stage the current source checkout away from the
-project. Replace only these four runtime files; preserve configuration, tasks, evidence,
-attempts, artifacts, handoff history, and agent instructions:
+Stage the v0.2.0-beta.2 tagged source outside the project and back up the installed
+`.harness/`. Replace only these four runtime files; preserve configuration, tasks,
+evidence, attempts, artifacts, handoff history, and agent instructions:
 
 ```bash
-mh_source=/absolute/path/to/current/minimal-harness-checkout
+(
+set -eu
+mh_source="$(mktemp -d)/minimal-harness"
+git clone --branch v0.2.0-beta.2 --depth 1 https://github.com/2278091160dg-rgb/minimal-harness.git "$mh_source"
 mh_project=/absolute/path/to/project
 mh_backup="$(mktemp -d)"
 cp -R "$mh_project/.harness" "$mh_backup/.harness"
@@ -221,6 +223,7 @@ cp "$mh_source/template/.harness/harness_runner.py" "$mh_project/.harness/harnes
 cp "$mh_source/template/.harness/LICENSE" "$mh_project/.harness/LICENSE"
 python3 "$mh_project/.harness/harness.py" --workspace "$mh_project" migrate --dry-run --note "Acknowledge the current acceptance definition for v3"
 python3 "$mh_project/.harness/harness.py" --workspace "$mh_project" migrate --note "Acknowledge the current acceptance definition for v3"
+)
 ```
 
 PowerShell performs the same four-file replacement and keeps its backup outside the
@@ -228,7 +231,9 @@ project:
 
 ```powershell
 $ErrorActionPreference = "Stop"
-$Source = "C:\path\to\current\minimal-harness-checkout"
+$Source = Join-Path ([IO.Path]::GetTempPath()) ("minimal-harness-source-" + [guid]::NewGuid())
+git clone --branch v0.2.0-beta.2 --depth 1 https://github.com/2278091160dg-rgb/minimal-harness.git $Source
+if ($LASTEXITCODE -ne 0) { throw "Minimal Harness source checkout failed with exit $LASTEXITCODE" }
 $Project = "C:\path\to\project"
 $Backup = Join-Path ([IO.Path]::GetTempPath()) ("minimal-harness-backup-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $Backup | Out-Null
@@ -243,8 +248,8 @@ py -3 (Join-Path $Project ".harness\harness.py") --workspace $Project migrate --
 if ($LASTEXITCODE -ne 0) { throw "Minimal Harness migration failed with exit $LASTEXITCODE" }
 ```
 
-The runtime license does not alter the project's root license. The published beta.1 ZIP
-cannot supply `.harness/LICENSE`; obtain all four files from the same current revision.
+The runtime license does not alter the project's root license. The historical beta.1 ZIP
+cannot supply `.harness/LICENSE`; obtain all four files from the v0.2.0-beta.2 source tag.
 For an older ref without `template/.harness/LICENSE`, use that same ref's root `LICENSE`
 only if intentionally staying on that ref.
 

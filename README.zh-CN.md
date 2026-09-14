@@ -16,15 +16,16 @@
 
 | 版本 | 适用场景 | 范围 |
 | --- | --- | --- |
-| [v0.2.0-beta.1](https://github.com/2278091160dg-rgb/minimal-harness/releases/tag/v0.2.0-beta.1) | 已发布 schema v3 测试版 | 包含 `init`、`task add/revise`、`report` 与源码/契约新鲜度绑定。它的 ZIP **没有**运行时 `LICENSE`，也没有当前源码中尚未发布的 Git/runner 加固。 |
-| 当前源码/PR | 评估本次未发布加固修订 | 全新 `init` 与显式升级会复制 `harness.py`、`harness_init.py`、`harness_runner.py` 和 `.harness/LICENSE`；还包含源码示例与发布检查器。 |
+| [v0.2.0-beta.2](https://github.com/2278091160dg-rgb/minimal-harness/releases/tag/v0.2.0-beta.2) | 当前 schema v3 预发布版 | 包含 `init`、`task add/revise`、`report`、源码/契约新鲜度绑定、Git/runner 加固与运行时 `LICENSE`。全新 `init` 与显式升级会复制全部四个运行时文件。 |
+| [v0.2.0-beta.1](https://github.com/2278091160dg-rgb/minimal-harness/releases/tag/v0.2.0-beta.1) | 历史 schema v3 测试版 | 它的 ZIP 缺少 `.harness/LICENSE` 和 beta.2 发布的 Git/runner 加固。已有安装请按显式升级流程更新。 |
 | [v0.1.1](https://github.com/2278091160dg-rgb/minimal-harness/releases/tag/v0.1.1) | 较早的稳定流程 | schema v2；没有 `init`、`task add/revise` 或 `report`。不要把 v3 命令手册用于它。 |
 
-本文档描述 schema v3。要体验已发布行为可下载 beta.1；要评估本 PR 修复，请使用当前源码检出。
+本文档描述 v0.2.0-beta.2 和 schema v3。该标签的源码树还包含示例与发布检查器，
+它们与运行时 ZIP 分开提供。
 
 ## 安装已发布 beta ZIP
 
-下面命令会下载两个真实 beta.1 资源、核验压缩包、解压到临时分段目录，然后初始化一个
+下面命令会下载两个 beta.2 资源、核验压缩包、解压到临时分段目录，然后初始化一个
 **已经存在**的项目。它们不会把压缩包直接覆盖到项目 `.harness/`。只需修改最后的项目路径。
 
 macOS 或 Linux：
@@ -32,7 +33,7 @@ macOS 或 Linux：
 ```bash
 (
 set -eu
-mh_version=v0.2.0-beta.1
+mh_version=v0.2.0-beta.2
 mh_base="https://github.com/2278091160dg-rgb/minimal-harness/releases/download/$mh_version"
 mh_stage="$(mktemp -d)"
 curl -fL "$mh_base/minimal-harness-$mh_version.zip" -o "$mh_stage/minimal-harness-$mh_version.zip"
@@ -52,7 +53,7 @@ PowerShell：
 
 ```powershell
 $ErrorActionPreference = "Stop"
-$Version = "v0.2.0-beta.1"
+$Version = "v0.2.0-beta.2"
 $Base = "https://github.com/2278091160dg-rgb/minimal-harness/releases/download/$Version"
 $Stage = Join-Path ([IO.Path]::GetTempPath()) ("minimal-harness-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $Stage | Out-Null
@@ -69,10 +70,8 @@ py -3 "$Runtime/.harness/harness.py" --workspace "C:\项目\绝对路径" init -
 if ($LASTEXITCODE -ne 0) { throw "Minimal Harness init failed with exit $LASTEXITCODE" }
 ```
 
-已核验的 beta.1 摘要为
-`f57b733a8eb4e62a05a0bf6ebcf66fc7972b9ec91dec47e1697252d5a1a81567`；
-仍应以刚下载的 `SHA256SUMS.txt` 为核验依据。beta ZIP 内是分段用 `.harness/` 树，
-不含示例，也不含 `.harness/LICENSE`。
+使用刚下载的 `SHA256SUMS.txt` 核验压缩包。beta.2 ZIP 内是分段用 `.harness/` 树，
+包含 `.harness/LICENSE`；示例仅在该标签的源码树中提供。
 
 `--agent claude` 向 `CLAUDE.md` 追加托管区块，`--agent generic` 使用通用
 `AGENTS.md`，省略 `--agent` 则只安装运行时。`init --dry-run` 仅预览。已有指令会保留，
@@ -81,7 +80,7 @@ if ($LASTEXITCODE -ne 0) { throw "Minimal Harness init failed with exit $LASTEXI
 
 ## 完整体验源码示例
 
-从当前源码检出根目录创建一个可丢弃项目：
+从 v0.2.0-beta.2 源码检出根目录创建一个可丢弃项目：
 
 ```bash
 mkdir ../harness-demo
@@ -192,13 +191,16 @@ python3 .harness/harness.py record TASK_ID CHECK_ID --result passed \
 `not_run / passed / failed / unverified`，unverified 绝不等于通过。退出码：`0` 成功/ready；
 `1` 检查失败或门禁未满足/过期；`2` 用法、配置或证据损坏；`130` 中断。
 
-## 显式升级到当前未发布修订
+## 显式升级到 v0.2.0-beta.2
 
-先备份已安装的 `.harness/`，并把当前源码检出放在项目之外的分段路径。只替换以下四个运行时
-文件；保留配置、任务、证据、attempt、artifact、handoff 历史与 Agent 指令：
+先把 v0.2.0-beta.2 标签的源码检出放在项目之外的分段路径，并备份已安装的 `.harness/`。
+只替换以下四个运行时文件；保留配置、任务、证据、attempt、artifact、handoff 历史与 Agent 指令：
 
 ```bash
-mh_source=/当前/minimal-harness/源码绝对路径
+(
+set -eu
+mh_source="$(mktemp -d)/minimal-harness"
+git clone --branch v0.2.0-beta.2 --depth 1 https://github.com/2278091160dg-rgb/minimal-harness.git "$mh_source"
 mh_project=/项目/绝对路径
 mh_backup="$(mktemp -d)"
 cp -R "$mh_project/.harness" "$mh_backup/.harness"
@@ -208,13 +210,16 @@ cp "$mh_source/template/.harness/harness_runner.py" "$mh_project/.harness/harnes
 cp "$mh_source/template/.harness/LICENSE" "$mh_project/.harness/LICENSE"
 python3 "$mh_project/.harness/harness.py" --workspace "$mh_project" migrate --dry-run --note "确认 v3 当前验收定义"
 python3 "$mh_project/.harness/harness.py" --workspace "$mh_project" migrate --note "确认 v3 当前验收定义"
+)
 ```
 
 PowerShell 同样只替换四个文件，并把备份放在项目外：
 
 ```powershell
 $ErrorActionPreference = "Stop"
-$Source = "C:\当前\minimal-harness\源码路径"
+$Source = Join-Path ([IO.Path]::GetTempPath()) ("minimal-harness-source-" + [guid]::NewGuid())
+git clone --branch v0.2.0-beta.2 --depth 1 https://github.com/2278091160dg-rgb/minimal-harness.git $Source
+if ($LASTEXITCODE -ne 0) { throw "Minimal Harness source checkout failed with exit $LASTEXITCODE" }
 $Project = "C:\项目\绝对路径"
 $Backup = Join-Path ([IO.Path]::GetTempPath()) ("minimal-harness-backup-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $Backup | Out-Null
@@ -229,8 +234,8 @@ py -3 (Join-Path $Project ".harness\harness.py") --workspace $Project migrate --
 if ($LASTEXITCODE -ne 0) { throw "Minimal Harness migration failed with exit $LASTEXITCODE" }
 ```
 
-运行时 LICENSE 不修改用户项目根许可证。已发布 beta.1 ZIP 不能提供 `.harness/LICENSE`；四个
-文件须来自同一当前修订。如果刻意停留在没有 `template/.harness/LICENSE` 的旧 ref，只能使用
+运行时 LICENSE 不修改用户项目根许可证。历史 beta.1 ZIP 不能提供 `.harness/LICENSE`；四个
+文件须来自 v0.2.0-beta.2 源码标签。如果刻意停留在没有 `template/.harness/LICENSE` 的旧 ref，只能使用
 同一 ref 的根 `LICENSE`。
 
 迁移先归档 v1/v2 状态。未完成任务的旧通过必须重验；已完成旧任务只作历史记录。v2 Git/策略

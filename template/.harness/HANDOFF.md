@@ -1,6 +1,6 @@
 # Harness Handoff
 
-This is a schema v2 bootstrap file. It does not contain a Git snapshot yet.
+This is a schema v3 bootstrap file. It does not contain a Git snapshot yet.
 
 Run:
 

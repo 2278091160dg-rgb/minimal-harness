@@ -3,9 +3,9 @@
 [English](usage-guide.md) · [README](../README.zh-CN.md) ·
 [CLI 参考](cli-reference.zh-CN.md) · [文档索引](README.zh-CN.md)
 
-下面四个案例使用 schema v3，并从当前源码检出运行；`examples/quickstart` 与
-`examples/todo` 不在已发布运行时 ZIP 中。v0.2.0-beta.1 运行时支持同一套 v3 基本流程，
-当前源码还包含未发布加固，并会安装 `.harness/LICENSE`。
+下面四个案例使用 v0.2.0-beta.2 和 schema v3，并从该标签的源码检出运行；
+`examples/quickstart` 与 `examples/todo` 不在已发布运行时 ZIP 中。
+v0.2.0-beta.2 运行时包含 Git/runner 加固，并会安装 `.harness/LICENSE`。
 
 项目安装后，从项目根目录运行 `python3 .harness/harness.py ...`。从别处调用模板时，
 全局 `--workspace PATH` 要写在子命令之前。省略它时，工作区是脚本所在目录的上级目录，

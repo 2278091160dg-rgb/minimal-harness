@@ -3,8 +3,8 @@
 [简体中文](cli-reference.zh-CN.md) · [README](../README.md) ·
 [Practical guide](usage-guide.md) · [Documentation index](README.md)
 
-This is the complete parser surface for schema v3. The CLI emits English text in both
-language workflows; it has no locale or translation option.
+This is the complete parser surface for v0.2.0-beta.2 and schema v3. The CLI emits
+English text in both language workflows; it has no locale or translation option.
 
 ## Invocation and path rules
 
@@ -92,14 +92,14 @@ its default would be the template/staging parent. The target directory must alre
 exist. `--agent codex` or `generic` targets `AGENTS.md`; `claude` targets `CLAUDE.md`.
 Omitting it installs no host instructions. `--dry-run` preflights and lists changes.
 
-Current unreleased source preflights `harness.py`, `harness_init.py`,
+v0.2.0-beta.2 preflights `harness.py`, `harness_init.py`,
 `harness_runner.py`, and `LICENSE` from one source directory before any write. A fresh
 install creates those four files under `.harness/` plus config, empty tasks, and handoff.
-It never changes the project root license. Published beta.1 behaves the same except that
-its historical ZIP/runtime has only the three Python modules and no runtime license.
+It never changes the project root license. The historical beta.1 ZIP/runtime has only
+the three Python modules and no runtime license.
 
 Repeat init validates the complete installed runtime and state, and can append one
-missing managed instruction block. It does not upgrade. Current source treats an old v3
+missing managed instruction block. It does not upgrade. v0.2.0-beta.2 treats an old v3
 install without `.harness/LICENSE`, a different runtime byte, a partial install, a
 symlink target, or a conflicting/partial managed block as an explicit-upgrade error.
 
