@@ -1,6 +1,7 @@
 import re
 import unittest
 from pathlib import Path
+from typing import Optional
 from urllib.parse import unquote
 
 
@@ -14,7 +15,7 @@ def markdown_links(document: Path) -> list[str]:
     return re.findall(r"\[[^\]]+\]\(([^)]+)\)", text)
 
 
-def local_link_target(document: Path, raw_target: str) -> Path | None:
+def local_link_target(document: Path, raw_target: str) -> Optional[Path]:
     target = raw_target.strip().split("#", 1)[0]
     if not target or target.startswith(("#", "http://", "https://", "mailto:")):
         return None
