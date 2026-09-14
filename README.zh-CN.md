@@ -12,6 +12,28 @@
 [English](README.md) · [文档索引](docs/README.zh-CN.md) ·
 [首次真人试用表](docs/adoption-validation.zh-CN.md)
 
+## 为什么选择 Minimal Harness
+
+Minimal Harness 有意比大多数名为 agent harness 的工具更窄。它是一个仓库内的验收内核：
+维护单任务生命周期、运行已配置的命令验收、记录浏览器或人工观察，把证据绑定到完整的冻结契约
+和 Git 验证对象，并且只把已验证状态带入下一次会话。通过后只要发生暂存、提交、切换分支、
+修改契约、修改验证器或变更受覆盖文件，旧证据就会失效。
+
+可发行运行时是一个约 145 KB 的 ZIP，仅使用 Python 3.9+ 标准库。它不需要模型 API、daemon、
+数据库、托管服务或遥测。受限 runner 会保留原始日志，并限制超时、输出量、中断和进程树清理。
+这些是组合使用且有测试覆盖的能力，并不声称每个机制都是本项目独有。
+
+| 类型 | 主要职责 | 与 Minimal Harness 的关系 |
+| --- | --- | --- |
+| 最小验收内核 | 运行验收、保留当前证据、门禁完成、生成交接 | 本项目刻意保持的窄边界 |
+| Completion card／receipt 门禁 | 判断 worker 提交的声明或回执能否接受 | 只需要独立准入判断时是可用替代方案 |
+| 完整 Agent 编排器 | 规划、委派、模型路由、记忆、hook 或沙箱 | 可互补；编排不进入本内核 |
+| 仅 CI 验证器 | 检查已推送或待合并的 revision | 可互补；Minimal 还会在 CI 前门禁本地完成 |
+
+当你需要在现有 Git 仓库内复制一套与 Agent 无关的完成与交接闭环时，适合使用 Minimal
+Harness。需要 Agent 执行、并发、长期记忆、GUI 或 OS 沙箱时，应选择更广的编排器。具名项目、
+固定 revision、证据等级与当前限制见[日期化竞品格局报告](docs/research/2026-09-14-github-harness-landscape-refresh.md)。
+
 ## 选择正确版本
 
 | 版本 | 适用场景 | 范围 |
@@ -258,6 +280,7 @@ Harness 状态的进程可以绕过它。只支持单执行者。运行时不调
 - [实战使用指南](docs/usage-guide.zh-CN.md)
 - [完整 CLI 参考](docs/cli-reference.zh-CN.md)
 - [文档索引](docs/README.zh-CN.md)
+- [竞品格局快照](docs/research/2026-09-14-github-harness-landscape-refresh.md)
 - [首次真人试用表](docs/adoption-validation.zh-CN.md)——仍等待真实用户
 - [贡献指南](CONTRIBUTING.zh-CN.md)
 - [安全策略](SECURITY.zh-CN.md)

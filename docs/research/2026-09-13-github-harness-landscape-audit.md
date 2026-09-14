@@ -1,5 +1,9 @@
 # Minimal Harness v2 GitHub 同类资源独立复核与蒸馏判断
 
+> 历史快照：本报告只描述 2026-09-13 的 v2 状态。证据新鲜度、许可证和发布缺口已在
+> v0.2.0-beta.2 解决；当前竞品与定位结论见
+> [2026-09-14 刷新报告](2026-09-14-github-harness-landscape-refresh.md)。
+
 > 审计日期：2026-09-13
 > 被审计提交：b523ba4f92d52795f6771ce9e6e7ad7f461b81d8
 > 默认定位：Minimal, dependency-free, fail-closed completion proof layer for coding agents
