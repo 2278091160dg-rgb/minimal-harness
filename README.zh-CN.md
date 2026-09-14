@@ -9,8 +9,8 @@
 
 **Python 3.9+ 标准库 · Git · 单执行者 · 不调用模型或云服务**
 
-[English](README.md) · [文档索引](docs/README.zh-CN.md) ·
-[首次真人试用表](docs/adoption-validation.zh-CN.md)
+[第一次使用](START-HERE.zh-CN.md) · [English](README.md) ·
+[文档索引](docs/README.zh-CN.md) · [维护者试用记录表](docs/adoption-validation.zh-CN.md)
 
 ## 为什么选择 Minimal Harness
 
@@ -280,8 +280,9 @@ Harness 状态的进程可以绕过它。只支持单执行者。运行时不调
 - [实战使用指南](docs/usage-guide.zh-CN.md)
 - [完整 CLI 参考](docs/cli-reference.zh-CN.md)
 - [文档索引](docs/README.zh-CN.md)
+- [第一次使用入口](START-HERE.zh-CN.md)——分开提供 macOS 与 Windows 路径
 - [竞品格局快照](docs/research/2026-09-14-github-harness-landscape-refresh.md)
-- [首次真人试用表](docs/adoption-validation.zh-CN.md)——仍等待真实用户
+- [维护者试用记录表](docs/adoption-validation.zh-CN.md)——仍等待真实用户
 - [贡献指南](CONTRIBUTING.zh-CN.md)
 - [安全策略](SECURITY.zh-CN.md)
 - [MIT License（英文法律文本）](LICENSE)

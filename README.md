@@ -10,8 +10,8 @@ matches the current source and acceptance definition.
 
 **Python 3.9+ standard library · Git · one writer · no model API or service**
 
-[简体中文](README.zh-CN.md) · [Documentation](docs/README.md) ·
-[First-time trial sheet](docs/adoption-validation.md)
+[Start here](START-HERE.md) · [简体中文](README.zh-CN.md) ·
+[Documentation](docs/README.md) · [Maintainer trial sheet](docs/adoption-validation.md)
 
 ## Why Minimal Harness
 
@@ -304,8 +304,9 @@ It requires `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, and a full `GITHUB_SHA`.
 - [Practical usage guide](docs/usage-guide.md)
 - [Complete CLI reference](docs/cli-reference.md)
 - [Documentation index](docs/README.md)
+- [First-time user start page](START-HERE.md) — separate macOS and Windows paths
 - [Competitive landscape snapshot](docs/research/2026-09-14-github-harness-landscape-refresh.md)
-- [First-time human trial sheet](docs/adoption-validation.md) — pending real users
+- [Maintainer trial sheet](docs/adoption-validation.md) — pending real users
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 - [MIT License](LICENSE)

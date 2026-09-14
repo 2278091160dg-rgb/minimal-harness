@@ -7,6 +7,7 @@ staged ZIP installation and a complete first task.
 
 | Your next step | Guide |
 | --- | --- |
+| Complete a first run on macOS or Windows | [Start here](../START-HERE.md) |
 | Apply Harness to a bug fix, browser observation, requirement revision or resumed session | [Usage guide](usage-guide.md) |
 | Look up a command, option, required state, write effect or exit code | [CLI reference](cli-reference.md) |
 | Upgrade an existing installation while preserving its state | [Installation and migration](../README.md) |
