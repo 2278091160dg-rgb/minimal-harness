@@ -1,5 +1,7 @@
 # Security Policy
 
+[中文安全策略](SECURITY.zh-CN.md) · [Documentation](docs/README.md)
+
 ## Supported versions
 
 Minimal Harness is currently pre-1.0. Security fixes are made on the latest release and the `main` branch. Older snapshots are not maintained separately.
