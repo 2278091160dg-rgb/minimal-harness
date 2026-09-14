@@ -13,6 +13,34 @@ matches the current source and acceptance definition.
 [简体中文](README.zh-CN.md) · [Documentation](docs/README.md) ·
 [First-time trial sheet](docs/adoption-validation.md)
 
+## Why Minimal Harness
+
+Minimal Harness is deliberately narrower than most tools called an agent harness. It is
+a repository-local acceptance kernel: it keeps one task lifecycle, runs configured
+command acceptance, records browser or manual observations, binds the resulting evidence
+to the full frozen contract and Git subject, and carries only verified state into the next
+session. A staged change, commit, branch switch, contract revision, verifier change, or
+covered file change after a pass makes that evidence stale.
+
+The distributable runtime is a roughly 145 KB ZIP built from Python 3.9+ standard-library
+code. It has no model API, daemon, database, hosted service, or telemetry. Its bounded
+runner retains raw logs and enforces time, output, interruption, and process-tree cleanup
+limits. These are tested capabilities used together, not a claim that each mechanism is
+unique.
+
+| Approach | Primary job | Relationship to Minimal Harness |
+| --- | --- | --- |
+| Minimal acceptance kernel | Run acceptance, retain current evidence, gate completion, hand off | This project's intentionally narrow scope |
+| Completion-card or receipt gate | Evaluate a worker-produced claim or receipt | Useful alternative when a standalone admission decision is enough |
+| Full agent orchestrator | Plan, delegate, route models, manage memory, hooks, or sandboxes | Complementary; keep orchestration outside this kernel |
+| CI-only verifier | Check a pushed or proposed revision | Complementary; Minimal also gates local completion before CI |
+
+Use Minimal Harness when you want a copyable, agent-neutral completion and handoff loop
+inside an existing Git repository. Choose a broader orchestrator when you need agent
+execution, concurrency, long-term memory, a GUI, or an operating-system sandbox. See the
+[dated competitive landscape](docs/research/2026-09-14-github-harness-landscape-refresh.md)
+for named projects, fixed revisions, evidence levels, and current limitations.
+
 ## Choose the right version
 
 | Version | Use it for | Scope |
@@ -276,6 +304,7 @@ It requires `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, and a full `GITHUB_SHA`.
 - [Practical usage guide](docs/usage-guide.md)
 - [Complete CLI reference](docs/cli-reference.md)
 - [Documentation index](docs/README.md)
+- [Competitive landscape snapshot](docs/research/2026-09-14-github-harness-landscape-refresh.md)
 - [First-time human trial sheet](docs/adoption-validation.md) — pending real users
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)

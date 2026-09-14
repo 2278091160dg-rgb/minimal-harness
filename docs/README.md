@@ -11,6 +11,7 @@ staged ZIP installation and a complete first task.
 | Look up a command, option, required state, write effect or exit code | [CLI reference](cli-reference.md) |
 | Upgrade an existing installation while preserving its state | [Installation and migration](../README.md) |
 | Run a first-time trial and record what happened | [First-time user validation](adoption-validation.md) |
+| Compare Minimal Harness with completion gates and broader orchestrators | [Dated competitive landscape](research/2026-09-14-github-harness-landscape-refresh.md) |
 | Develop or test a contribution | [Contributing](../CONTRIBUTING.md) |
 | Report a vulnerability privately and understand the trust boundary | [Security policy](../SECURITY.md) |
 | Read the software license | [MIT License](../LICENSE) |

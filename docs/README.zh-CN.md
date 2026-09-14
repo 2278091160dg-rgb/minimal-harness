@@ -11,6 +11,7 @@
 | 查询命令、参数、前置状态、文件写入和退出码 | [命令参考](cli-reference.zh-CN.md) |
 | 升级已有安装，同时保留原有状态 | [安装与迁移说明](../README.zh-CN.md) |
 | 完成一次新用户试用并记录结果 | [真实新用户验证](adoption-validation.zh-CN.md) |
+| 比较 Minimal Harness、completion gate 与更广的编排器 | [日期化竞品格局](research/2026-09-14-github-harness-landscape-refresh.md) |
 | 开发或测试代码贡献 | [贡献指南](../CONTRIBUTING.zh-CN.md) |
 | 私下报告漏洞、了解工具的信任边界 | [安全策略](../SECURITY.zh-CN.md) |
 | 阅读软件许可证 | [MIT License 英文原文](../LICENSE) |
