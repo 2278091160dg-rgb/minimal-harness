@@ -1,7 +1,7 @@
 # Minimal Harness
 
-[![CI](https://github.com/2278091160dg-rgb/minimal-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/2278091160dg-rgb/minimal-harness/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/2278091160dg-rgb/minimal-harness)](https://github.com/2278091160dg-rgb/minimal-harness/releases)
+[![CI](https://github.com/denggui-ai/minimal-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/denggui-ai/minimal-harness/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/denggui-ai/minimal-harness)](https://github.com/denggui-ai/minimal-harness/releases)
 [![MIT License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 一个面向 AI 编程的轻量本地验收与跨会话交接工具。先定义必须成立的行为，再运行检查、
@@ -9,8 +9,8 @@
 
 **Python 3.9+ 标准库 · Git · 单执行者 · 不调用模型或云服务**
 
-[English](README.md) · [文档索引](docs/README.zh-CN.md) ·
-[首次真人试用表](docs/adoption-validation.zh-CN.md)
+[第一次使用](START-HERE.zh-CN.md) · [English](README.md) ·
+[文档索引](docs/README.zh-CN.md) · [维护者试用记录表](docs/adoption-validation.zh-CN.md)
 
 ## 为什么选择 Minimal Harness
 
@@ -38,9 +38,9 @@ Harness。需要 Agent 执行、并发、长期记忆、GUI 或 OS 沙箱时，�
 
 | 版本 | 适用场景 | 范围 |
 | --- | --- | --- |
-| [v0.2.0-beta.2](https://github.com/2278091160dg-rgb/minimal-harness/releases/tag/v0.2.0-beta.2) | 当前 schema v3 预发布版 | 包含 `init`、`task add/revise`、`report`、源码/契约新鲜度绑定、Git/runner 加固与运行时 `LICENSE`。全新 `init` 与显式升级会复制全部四个运行时文件。 |
-| [v0.2.0-beta.1](https://github.com/2278091160dg-rgb/minimal-harness/releases/tag/v0.2.0-beta.1) | 历史 schema v3 测试版 | 它的 ZIP 缺少 `.harness/LICENSE` 和 beta.2 发布的 Git/runner 加固。已有安装请按显式升级流程更新。 |
-| [v0.1.1](https://github.com/2278091160dg-rgb/minimal-harness/releases/tag/v0.1.1) | 较早的稳定流程 | schema v2；没有 `init`、`task add/revise` 或 `report`。不要把 v3 命令手册用于它。 |
+| [v0.2.0-beta.2](https://github.com/denggui-ai/minimal-harness/releases/tag/v0.2.0-beta.2) | 当前 schema v3 预发布版 | 包含 `init`、`task add/revise`、`report`、源码/契约新鲜度绑定、Git/runner 加固与运行时 `LICENSE`。全新 `init` 与显式升级会复制全部四个运行时文件。 |
+| [v0.2.0-beta.1](https://github.com/denggui-ai/minimal-harness/releases/tag/v0.2.0-beta.1) | 历史 schema v3 测试版 | 它的 ZIP 缺少 `.harness/LICENSE` 和 beta.2 发布的 Git/runner 加固。已有安装请按显式升级流程更新。 |
+| [v0.1.1](https://github.com/denggui-ai/minimal-harness/releases/tag/v0.1.1) | 较早的稳定流程 | schema v2；没有 `init`、`task add/revise` 或 `report`。不要把 v3 命令手册用于它。 |
 
 本文档描述 v0.2.0-beta.2 和 schema v3。该标签的源码树还包含示例与发布检查器，
 它们与运行时 ZIP 分开提供。
@@ -56,7 +56,7 @@ macOS 或 Linux：
 (
 set -eu
 mh_version=v0.2.0-beta.2
-mh_base="https://github.com/2278091160dg-rgb/minimal-harness/releases/download/$mh_version"
+mh_base="https://github.com/denggui-ai/minimal-harness/releases/download/$mh_version"
 mh_stage="$(mktemp -d)"
 curl -fL "$mh_base/minimal-harness-$mh_version.zip" -o "$mh_stage/minimal-harness-$mh_version.zip"
 curl -fL "$mh_base/SHA256SUMS.txt" -o "$mh_stage/SHA256SUMS.txt"
@@ -76,7 +76,7 @@ PowerShell：
 ```powershell
 $ErrorActionPreference = "Stop"
 $Version = "v0.2.0-beta.2"
-$Base = "https://github.com/2278091160dg-rgb/minimal-harness/releases/download/$Version"
+$Base = "https://github.com/denggui-ai/minimal-harness/releases/download/$Version"
 $Stage = Join-Path ([IO.Path]::GetTempPath()) ("minimal-harness-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $Stage | Out-Null
 $Zip = Join-Path $Stage "minimal-harness-$Version.zip"
@@ -222,7 +222,7 @@ python3 .harness/harness.py record TASK_ID CHECK_ID --result passed \
 (
 set -eu
 mh_source="$(mktemp -d)/minimal-harness"
-git clone --branch v0.2.0-beta.2 --depth 1 https://github.com/2278091160dg-rgb/minimal-harness.git "$mh_source"
+git clone --branch v0.2.0-beta.2 --depth 1 https://github.com/denggui-ai/minimal-harness.git "$mh_source"
 mh_project=/项目/绝对路径
 mh_backup="$(mktemp -d)"
 cp -R "$mh_project/.harness" "$mh_backup/.harness"
@@ -240,7 +240,7 @@ PowerShell 同样只替换四个文件，并把备份放在项目外：
 ```powershell
 $ErrorActionPreference = "Stop"
 $Source = Join-Path ([IO.Path]::GetTempPath()) ("minimal-harness-source-" + [guid]::NewGuid())
-git clone --branch v0.2.0-beta.2 --depth 1 https://github.com/2278091160dg-rgb/minimal-harness.git $Source
+git clone --branch v0.2.0-beta.2 --depth 1 https://github.com/denggui-ai/minimal-harness.git $Source
 if ($LASTEXITCODE -ne 0) { throw "Minimal Harness source checkout failed with exit $LASTEXITCODE" }
 $Project = "C:\项目\绝对路径"
 $Backup = Join-Path ([IO.Path]::GetTempPath()) ("minimal-harness-backup-" + [guid]::NewGuid())
@@ -280,8 +280,9 @@ Harness 状态的进程可以绕过它。只支持单执行者。运行时不调
 - [实战使用指南](docs/usage-guide.zh-CN.md)
 - [完整 CLI 参考](docs/cli-reference.zh-CN.md)
 - [文档索引](docs/README.zh-CN.md)
+- [第一次使用入口](START-HERE.zh-CN.md)——分开提供 macOS 与 Windows 路径
 - [竞品格局快照](docs/research/2026-09-14-github-harness-landscape-refresh.md)
-- [首次真人试用表](docs/adoption-validation.zh-CN.md)——仍等待真实用户
+- [维护者试用记录表](docs/adoption-validation.zh-CN.md)——仍等待真实用户
 - [贡献指南](CONTRIBUTING.zh-CN.md)
 - [安全策略](SECURITY.zh-CN.md)
 - [MIT License（英文法律文本）](LICENSE)

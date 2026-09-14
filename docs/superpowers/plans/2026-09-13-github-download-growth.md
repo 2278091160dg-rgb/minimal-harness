@@ -63,7 +63,7 @@
 
 ### Task 4: Publish and verify GitHub state
 
-**Repository:** `2278091160dg-rgb/minimal-harness`
+**Repository:** `denggui-ai/minimal-harness`
 
 - [ ] Run the complete local verification matrix and review the full diff.
 - [ ] Push `codex/github-download-growth`, open a PR, and require green CI before merge.

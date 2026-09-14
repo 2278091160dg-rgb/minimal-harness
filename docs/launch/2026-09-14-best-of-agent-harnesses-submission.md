@@ -18,7 +18,7 @@ Add project: Minimal Harness
 ## Issue body
 
 ```markdown
-Repository: https://github.com/2278091160dg-rgb/minimal-harness
+Repository: https://github.com/denggui-ai/minimal-harness
 
 Harness: Minimal Harness is a repository-local, dependency-free acceptance and handoff
 kernel: it runs configured checks, binds evidence to the frozen task contract and current
@@ -32,7 +32,7 @@ project is new and would be appropriate for “On the radar” while external ad
 still being measured.
 
 Show it in action:
-https://github.com/2278091160dg-rgb/minimal-harness#try-a-complete-source-example
+https://github.com/denggui-ai/minimal-harness#try-a-complete-source-example
 ```
 
 ## Pre-submission checks

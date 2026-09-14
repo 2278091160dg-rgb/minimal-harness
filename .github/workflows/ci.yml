@@ -49,6 +49,10 @@ jobs:
         run: ruff check --no-cache template/.harness integrations/github/publish_check.py scripts tests examples/quickstart
       - name: Node unit tests
         run: node --test examples/todo/test.mjs
+      - name: First-use PowerShell walkthrough
+        if: ${{ runner.os == 'Windows' && matrix.python-version == '3.9' }}
+        shell: pwsh
+        run: ./tests/run_first_use_windows.ps1
       - name: Harness doctor
         run: |
           python template/.harness/harness.py --workspace template doctor

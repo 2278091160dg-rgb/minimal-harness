@@ -58,7 +58,7 @@ coverage. Its standalone release check exposed a Windows Python 3.9 path issue:
 resolving a nonexistent relative output directory could leave it relative, so
 changing the child working directory duplicated that path. The uploaded synthetic
 diagnostic artifact retained the exact failed command and working directory.
-See the [failed release-check job](https://github.com/2278091160dg-rgb/minimal-harness/actions/runs/34797935444/job/103834569490)
+See the [failed release-check job](https://github.com/denggui-ai/minimal-harness/actions/runs/34797935444/job/103834569490)
 and the matching [CPython pathlib issue](https://github.com/python/cpython/issues/82852).
 
 The follow-up converts the output path to an absolute path with `os.path.abspath`

@@ -7,6 +7,7 @@ staged ZIP installation and a complete first task.
 
 | Your next step | Guide |
 | --- | --- |
+| Complete a first run on macOS or Windows | [Start here](../START-HERE.md) |
 | Apply Harness to a bug fix, browser observation, requirement revision or resumed session | [Usage guide](usage-guide.md) |
 | Look up a command, option, required state, write effect or exit code | [CLI reference](cli-reference.md) |
 | Upgrade an existing installation while preserving its state | [Installation and migration](../README.md) |
@@ -33,6 +34,6 @@ version labels in the README; source examples are separate from the runtime ZIP.
 [design specifications](superpowers/specs/), [research](research/) and
 [launch drafts](launch/) are dated maintainer records. They may describe earlier
 repository visibility, release state or unfinished work. Use the README and the
-current [release page](https://github.com/2278091160dg-rgb/minimal-harness/releases)
+current [release page](https://github.com/denggui-ai/minimal-harness/releases)
 for current installation choices. Historical records are not prerequisites for
 using Harness and are not all translated.

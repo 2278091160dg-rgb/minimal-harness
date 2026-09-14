@@ -47,7 +47,7 @@ Minimal Harness 仍有独立定位，但应收窄为：
 
 指定提交已实现 Python 3.9+ 标准库运行时、单执行者任务状态、活动/阻塞任务的 schema v2 不变量、领取时冻结 branch/HEAD/unborn/工作树/index 指纹、分段 glob 路径审计、不可覆盖 evidence/log、附件哈希复验，以及 doctor/handoff/complete 共享的 fail-closed 门禁。
 
-固定证据：[README](https://github.com/2278091160dg-rgb/minimal-harness/blob/b523ba4f92d52795f6771ce9e6e7ad7f461b81d8/README.md)、[Git 快照与范围审计](https://github.com/2278091160dg-rgb/minimal-harness/blob/b523ba4f92d52795f6771ce9e6e7ad7f461b81d8/template/.harness/harness.py#L471-L648)、[证据创建与复验](https://github.com/2278091160dg-rgb/minimal-harness/blob/b523ba4f92d52795f6771ce9e6e7ad7f461b81d8/template/.harness/harness.py#L983-L1165)。
+固定证据：[README](https://github.com/denggui-ai/minimal-harness/blob/b523ba4f92d52795f6771ce9e6e7ad7f461b81d8/README.md)、[Git 快照与范围审计](https://github.com/denggui-ai/minimal-harness/blob/b523ba4f92d52795f6771ce9e6e7ad7f461b81d8/template/.harness/harness.py#L471-L648)、[证据创建与复验](https://github.com/denggui-ai/minimal-harness/blob/b523ba4f92d52795f6771ce9e6e7ad7f461b81d8/template/.harness/harness.py#L983-L1165)。
 
 已确认边界：
 
