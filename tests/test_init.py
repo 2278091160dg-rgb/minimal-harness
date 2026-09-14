@@ -9,6 +9,8 @@ from unittest import mock
 
 
 MODULE = Path(__file__).resolve().parents[1] / "template" / ".harness" / "harness_init.py"
+ROOT_LICENSE = Path(__file__).resolve().parents[1] / "LICENSE"
+TEMPLATE_LICENSE = Path(__file__).resolve().parents[1] / "template" / ".harness" / "LICENSE"
 
 
 class InitializeTest(unittest.TestCase):
@@ -22,6 +24,7 @@ class InitializeTest(unittest.TestCase):
         self.workspace.mkdir()
         for name in ("harness.py", "harness_init.py", "harness_runner.py"):
             (self.source / name).write_text("# trusted runtime: " + name, encoding="utf-8")
+        (self.source / "LICENSE").write_bytes(b"fixture distribution license\n")
         if not MODULE.exists():
             self.fail("safe init is not implemented yet")
         spec = importlib.util.spec_from_file_location("harness_init", MODULE)
@@ -55,7 +58,23 @@ class InitializeTest(unittest.TestCase):
         self.assertTrue(config["policy"]["require_git_for_completion"])
         for name in ("harness.py", "harness_init.py", "harness_runner.py"):
             self.assertEqual((harness / name).read_bytes(), (self.source / name).read_bytes())
+        self.assertEqual((harness / "LICENSE").read_bytes(), b"fixture distribution license\n")
         self.assertFalse((self.workspace / "AGENTS.md").exists())
+
+    def test_template_carries_root_license_unchanged(self):
+        self.assertEqual(TEMPLATE_LICENSE.read_bytes(), ROOT_LICENSE.read_bytes())
+
+    def test_fresh_init_does_not_replace_workspace_root_license(self):
+        project_license = self.workspace / "LICENSE"
+        project_license.write_bytes(b"project's own license\n")
+
+        self.init()
+
+        self.assertEqual(project_license.read_bytes(), b"project's own license\n")
+        self.assertEqual(
+            (self.workspace / ".harness" / "LICENSE").read_bytes(),
+            b"fixture distribution license\n",
+        )
 
     def test_appends_instructions_once_and_preserves_existing_bytes(self):
         instructions = self.workspace / "AGENTS.md"
@@ -110,6 +129,14 @@ class InitializeTest(unittest.TestCase):
             self.init()
         self.assertEqual(before, self.contents())
 
+    def test_existing_modified_license_is_not_replaced(self):
+        self.init()
+        (self.workspace / ".harness" / "LICENSE").write_bytes(b"user replacement\n")
+        before = self.contents()
+        with self.assertRaisesRegex(ValueError, "LICENSE"):
+            self.init()
+        self.assertEqual(before, self.contents())
+
     def test_symlinked_host_instructions_are_rejected_without_external_write(self):
         external = self.root / "external.md"
         external.write_bytes(b"external original")
@@ -138,6 +165,21 @@ class InitializeTest(unittest.TestCase):
         with self.assertRaises((OSError, ValueError)):
             self.init()
         self.assertFalse((self.workspace / ".harness").exists())
+
+    def test_missing_source_license_fails_without_partial_install(self):
+        (self.source / "LICENSE").unlink()
+        with self.assertRaises((OSError, ValueError)):
+            self.init(agent="codex")
+        self.assertEqual(self.contents(), {})
+        self.assertFalse((self.workspace / ".harness").exists())
+
+    def test_existing_install_missing_license_requires_explicit_upgrade(self):
+        self.init()
+        (self.workspace / ".harness" / "LICENSE").unlink()
+        before = self.contents()
+        with self.assertRaisesRegex(ValueError, "LICENSE"):
+            self.init(agent="codex")
+        self.assertEqual(before, self.contents())
 
     def test_crlf_managed_block_is_idempotent(self):
         instructions = self.workspace / "AGENTS.md"

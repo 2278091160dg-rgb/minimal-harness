@@ -563,6 +563,30 @@ def git_path_relative_to_workspace(path: str, prefix: str) -> Optional[str]:
     return None
 
 
+def validate_git_index_flags(workspace: Path, context: str = "workspace") -> None:
+    # ls-files paths are relative to cwd; the pathspec excludes sibling projects
+    # when this workspace lives below the repository root.
+    result = run_git(workspace, ["ls-files", "-v", "-z", "--", "."], "index flags")
+    hidden = []
+    for record in result.stdout.split("\0"):
+        if not record:
+            continue
+        if len(record) < 3 or record[1] != " ":
+            raise GitAuditError("Git returned malformed index flag entries")
+        # -v lowercases assume-unchanged tags; S/s marks skip-worktree,
+        # including the case where both flags are set on the same entry.
+        if record[0].islower() or record[0] == "S":
+            hidden.append(record[2:])
+    if hidden:
+        raise GitAuditError(
+            f"Git hidden index flags in {context}: {display_paths(sorted(set(hidden)))}; "
+            "cannot prove the working tree clean. In that directory, clear both flags "
+            "for each affected path with git update-index --no-assume-unchanged -- <path> "
+            "and git update-index --no-skip-worktree -- <path>; then review the visible "
+            "changes and verify again. Flags were not changed automatically."
+        )
+
+
 def git_snapshot(
     workspace: Path,
     excluded_paths: Sequence[str] = (),
@@ -597,6 +621,7 @@ def git_snapshot(
             "worktree_fingerprints": {},
             "index_fingerprints": {},
         }
+    validate_git_index_flags(workspace)
     symbolic = run_git(
         workspace,
         ["symbolic-ref", "--quiet", "--short", "HEAD"],
@@ -1928,9 +1953,7 @@ def submodule_fingerprint(workspace: Path, path: str, gitlink_oid: str) -> str:
     head = run_git(submodule, ["rev-parse", "--verify", "HEAD"], f"submodule HEAD {path}").stdout.strip()
     if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", head) is None:
         raise GitAuditError(f"invalid submodule HEAD: {path}")
-    flags = run_git(submodule, ["ls-files", "-v", "-z"], f"submodule index flags {path}")
-    if any(record and (record[0].islower() or record[0] == "S") for record in flags.stdout.split("\0")):
-        raise GitAuditError(f"submodule has hidden index flags; cannot prove it clean: {path}")
+    validate_git_index_flags(submodule, f"submodule {path}")
     status = run_git(submodule, ["status", "--porcelain=v1", "-z", "--untracked-files=all",
                                  "--ignore-submodules=none"], f"submodule cleanliness {path}")
     if status.stdout:

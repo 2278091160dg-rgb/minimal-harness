@@ -217,6 +217,16 @@ def _terminate_tree(
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        # Darwin can return EPERM for a group whose exited leader has not been
+        # reaped. Reap it, then retry so surviving descendants are still signaled.
+        # A live leader or a second permission failure remains a real error.
+        if process.poll() is None:
+            raise
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
     time.sleep(0.1)
     try:
         os.killpg(process.pid, signal.SIGKILL)
@@ -470,7 +480,8 @@ def run_bounded(
                     break
                 if process.poll() is not None and reader_done.is_set():
                     break
-                limit_reached.wait(0.01)
+                # Condition.wait cleanup can mask KeyboardInterrupt on Windows.
+                time.sleep(0.01)
         except KeyboardInterrupt:
             reason = "interrupted"
             synthetic_returncode = 130

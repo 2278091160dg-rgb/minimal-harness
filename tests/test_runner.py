@@ -164,6 +164,44 @@ class BoundedRunnerTest(unittest.TestCase):
         self.assertEqual(100_003, log_path.stat().st_size)
         self.assertTrue(result.truncated)
 
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin zombie process-group behavior")
+    def test_cleanup_reaps_exited_leader_before_retrying_group_signal(self):
+        process = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+        try:
+            # Darwin removes an exited leader from its group before wait() reaps
+            # it. Observe that boundary without poll(), which would reap it.
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    os.getpgid(process.pid)
+                except ProcessLookupError:
+                    break
+                self.assertLess(time.monotonic(), deadline, "child never exited")
+                time.sleep(0.01)
+            self.assertIsNone(process.returncode)
+            self.runner._terminate_tree(process, None, 125)
+            self.assertEqual(0, process.returncode)
+            self.assert_process_gone(process.pid)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process-group permissions")
+    def test_cleanup_does_not_hide_permission_error_for_live_process(self):
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
+        )
+        try:
+            with mock.patch.object(self.runner.os, "killpg", side_effect=PermissionError("denied")):
+                with self.assertRaisesRegex(PermissionError, "denied"):
+                    self.runner._terminate_tree(process, None, 125)
+            self.assertIsNone(process.poll())
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+
     def test_exact_output_limit_is_not_reported_as_truncated(self):
         result, log_path = self.run_python(
             "import os, sys; os.write(sys.stdout.fileno(), b'12345')",
@@ -191,22 +229,62 @@ class BoundedRunnerTest(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 3)
 
     @unittest.skipUnless(hasattr(signal, "SIGINT"), "SIGINT is unavailable")
-    def test_keyboard_interrupt_returns_130_and_retains_partial_output(self):
-        timer = threading.Timer(0.2, signal.raise_signal, args=(signal.SIGINT,))
-        timer.start()
-        try:
-            result, log_path = self.run_python(
-                "import os, time; os.write(1, b'before interrupt\\n'); time.sleep(30)"
-            )
-        finally:
-            timer.cancel()
-            timer.join()
+    def test_keyboard_interrupt_returns_130_and_cleans_ready_process_tree(self):
+        self.assert_ready_interrupt_cleanup()
 
+    @unittest.skipUnless(hasattr(signal, "SIGINT"), "SIGINT is unavailable")
+    def test_interrupt_does_not_enter_condition_wait_cleanup_on_main_thread(self):
+        # Emulate the observed Python 3.9 Windows Condition cleanup failure at
+        # the blocking boundary, while retaining real output and process cleanup.
+        real_wait = threading.Event.wait
+
+        def wait_with_interrupt_cleanup_failure(event, timeout=None):
+            if threading.current_thread() is threading.main_thread() and timeout == 0.01:
+                try:
+                    raise KeyboardInterrupt
+                except KeyboardInterrupt as exc:
+                    raise RuntimeError("release unlocked lock") from exc
+            return real_wait(event, timeout)
+
+        with mock.patch.object(threading.Event, "wait", wait_with_interrupt_cleanup_failure):
+            self.assert_ready_interrupt_cleanup()
+
+    def assert_ready_interrupt_cleanup(self):
+        pid_path = self.workspace / "interrupt-pids.json"
+        log_path = self.workspace / "interrupt.log"
+        stop = threading.Event()
+        sent = []
+
+        def interrupt_when_ready():
+            deadline = time.monotonic() + 10
+            while not stop.is_set() and time.monotonic() < deadline:
+                if pid_path.exists() and log_path.exists() and log_path.read_bytes() == b"before interrupt\xff\n":
+                    sent.append(True)
+                    signal.raise_signal(signal.SIGINT)
+                    return
+                time.sleep(0.01)
+
+        watcher = threading.Thread(target=interrupt_when_ready, daemon=True)
+        watcher.start()
+        source = (
+            "import json, os, pathlib, subprocess, sys, time; "
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+            f"pathlib.Path({str(pid_path)!r}).write_text(json.dumps([os.getpid(), child.pid])); "
+            "os.write(1, b'before interrupt\\xff\\n'); time.sleep(30)"
+        )
+        try:
+            result, log_path = self.run_python(source, name="interrupt.log", timeout_seconds=15)
+        finally:
+            stop.set()
+            watcher.join(timeout=2)
+        self.assertTrue(sent, "child never became ready for interrupt")
         self.assertEqual(130, result.returncode)
         self.assertEqual("interrupted", result.reason)
-        self.assertEqual(b"before interrupt\n", log_path.read_bytes())
-        self.assertEqual(17, result.bytes_written)
+        self.assertEqual(b"before interrupt\xff\n", log_path.read_bytes())
+        self.assertEqual(18, result.bytes_written)
         self.assertFalse(result.truncated)
+        for pid in json.loads(pid_path.read_text()):
+            self.assert_process_gone(pid)
 
     def test_timeout_kills_descendant_that_keeps_output_pipe_open(self):
         pid_path = self.workspace / "descendant.pid"

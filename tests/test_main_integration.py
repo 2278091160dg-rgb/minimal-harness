@@ -2,6 +2,7 @@
 import hashlib
 import json
 import subprocess
+import sys
 import unittest
 
 import test_harness as fixtures
@@ -22,6 +23,134 @@ class MainIntegrationTest(unittest.TestCase):
         self.assertEqual(0, self.run_cli("next").returncode)
         result = self.run_cli("verify")
         self.assertEqual(0, result.returncode, result.stderr)
+
+    def set_index_flags(self, flags, path="protected.txt", cwd=None):
+        for flag in flags:
+            subprocess.run(["git", "update-index", flag, "--", path],
+                           cwd=cwd or self.workspace, check=True, capture_output=True)
+
+    def clear_index_flags(self, path="protected.txt", cwd=None):
+        self.set_index_flags(("--no-assume-unchanged", "--no-skip-worktree"), path, cwd)
+
+    def assert_hidden_flags_rejected(self, result, returncode, path="protected.txt"):
+        self.assertEqual(returncode, result.returncode, result.stdout + result.stderr)
+        diagnostic = result.stdout + result.stderr
+        self.assertIn("hidden index flags", diagnostic)
+        self.assertIn(path, diagnostic)
+        self.assertIn("--no-assume-unchanged", diagnostic)
+        self.assertIn("--no-skip-worktree", diagnostic)
+
+    def test_hidden_index_flags_before_next_reject_clean_tracked_files(self):
+        (self.workspace / "protected.txt").write_text("original\n")
+        self.initialize_git_repository()
+        for flags in (("--assume-unchanged",), ("--skip-worktree",),
+                      ("--assume-unchanged", "--skip-worktree")):
+            with self.subTest(flags=flags):
+                self.set_index_flags(flags)
+                before = (self.harness_dir / "tasks.json").read_bytes()
+                self.assert_hidden_flags_rejected(self.run_cli("next"), 2)
+                self.assertEqual(before, (self.harness_dir / "tasks.json").read_bytes())
+                self.clear_index_flags()
+        self.assertEqual(0, self.run_cli("next").returncode)
+
+    def test_hidden_index_flags_cannot_hide_out_of_scope_changes_before_verification(self):
+        source = self.workspace / "protected.txt"
+        source.write_text("original\n")
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        for flags in (("--assume-unchanged",), ("--skip-worktree",),
+                      ("--assume-unchanged", "--skip-worktree")):
+            with self.subTest(flags=flags):
+                self.set_index_flags(flags)
+                source.write_text("forbidden change\n")
+                self.assert_hidden_flags_rejected(self.run_cli("verify"), 2)
+                report = self.run_cli("report", "task-1", "--format", "json")
+                self.assert_hidden_flags_rejected(report, 1)
+                self.assertFalse(json.loads(report.stdout)["ready"])
+                self.assert_hidden_flags_rejected(self.run_cli("complete", "task-1"), 1)
+                self.clear_index_flags()
+                self.assertEqual(0, self.run_cli("verify").returncode)
+                rejected = self.run_cli("complete", "task-1")
+                self.assertEqual(1, rejected.returncode, rejected.stderr)
+                self.assertIn("outside allowed_paths", rejected.stderr)
+                source.write_text("original\n")
+        self.assertEqual(0, self.run_cli("verify").returncode)
+        self.assertEqual(0, self.run_cli("complete", "task-1").returncode)
+
+    def test_hidden_index_flags_after_pass_block_reports_and_reverification_until_recovery(self):
+        source = self.workspace / "protected.txt"
+        source.write_text("original\n")
+        self.initialize_git_repository()
+        self.ready()
+        for flags in (("--assume-unchanged",), ("--skip-worktree",),
+                      ("--assume-unchanged", "--skip-worktree")):
+            with self.subTest(flags=flags):
+                self.set_index_flags(flags)
+                before_flags = subprocess.run(["git", "ls-files", "-v", "-z"],
+                                              cwd=self.workspace, capture_output=True, check=True).stdout
+                before_state = (self.harness_dir / "tasks.json").read_bytes()
+                for format_name in ("json", "text", "markdown"):
+                    self.assert_hidden_flags_rejected(
+                        self.run_cli("report", "task-1", "--format", format_name), 1)
+                self.assertEqual(before_state, (self.harness_dir / "tasks.json").read_bytes())
+                self.assert_hidden_flags_rejected(self.run_cli("complete", "task-1"), 1)
+                self.assertEqual(before_flags, subprocess.run(["git", "ls-files", "-v", "-z"],
+                                 cwd=self.workspace, capture_output=True, check=True).stdout)
+                source.write_text("forbidden change\n")
+                self.assert_hidden_flags_rejected(self.run_cli("verify"), 2)
+                self.assertNotEqual("passed", self.read_tasks()["tasks"][0]["acceptance"][0]["status"])
+                self.clear_index_flags()
+                source.write_text("original\n")
+                self.assertEqual(0, self.run_cli("verify").returncode)
+                self.assertEqual(0, self.run_cli("report", "task-1", "--format", "json").returncode)
+        self.assertEqual(0, self.run_cli("complete", "task-1").returncode)
+
+    def test_hidden_index_flags_created_during_verification_cannot_pass(self):
+        (self.workspace / "protected.txt").write_text("original\n")
+        command = [sys.executable, "-c", "import subprocess; subprocess.run(['git', 'update-index', '--skip-worktree', 'protected.txt'], check=True)"]
+        self.write_json("tasks.json", fixtures.base_tasks(command=command))
+        self.initialize_git_repository()
+        self.assertEqual(0, self.run_cli("next").returncode)
+        self.assert_hidden_flags_rejected(self.run_cli("verify"), 2)
+        self.assertNotEqual("passed", self.read_tasks()["tasks"][0]["acceptance"][0]["status"])
+        self.assert_hidden_flags_rejected(self.run_cli("complete", "task-1"), 1)
+
+    def test_nested_workspace_ignores_sibling_flags_but_rejects_its_own_flags(self):
+        root = self.workspace
+        nested = root / "packages" / "nested"
+        harness = nested / ".harness"
+        harness.mkdir(parents=True)
+        (harness / "config.json").write_text(json.dumps(fixtures.base_config()))
+        (harness / "tasks.json").write_text(json.dumps(fixtures.base_tasks()))
+        (nested / "protected.txt").write_text("nested source\n")
+        (root / "sibling.txt").write_text("unrelated source\n")
+        self.initialize_git_repository()
+        self.set_index_flags(("--assume-unchanged", "--skip-worktree"), "sibling.txt")
+        (root / "sibling.txt").write_text("unrelated hidden change\n")
+        self.workspace, self.harness_dir = nested, harness
+        self.ready()
+        for flags in (("--assume-unchanged",), ("--skip-worktree",)):
+            with self.subTest(flags=flags):
+                self.set_index_flags(flags)
+                self.assert_hidden_flags_rejected(self.run_cli("verify"), 2)
+                self.clear_index_flags()
+                self.assertEqual(0, self.run_cli("verify").returncode)
+        self.assertEqual(0, self.run_cli("complete", "task-1").returncode)
+
+    def test_submodule_hidden_flags_report_paths_and_manual_recovery(self):
+        library = self.add_clean_submodule()
+        self.ready()
+        for flags in (("--assume-unchanged",), ("--skip-worktree",),
+                      ("--assume-unchanged", "--skip-worktree")):
+            with self.subTest(flags=flags):
+                self.set_index_flags(flags, "library.txt", library)
+                report = self.run_cli("report", "task-1", "--format", "json")
+                self.assert_hidden_flags_rejected(report, 1, "library.txt")
+                self.assertIn("vendor/library", report.stdout)
+                self.assert_hidden_flags_rejected(self.run_cli("verify"), 2, "library.txt")
+                self.clear_index_flags("library.txt", library)
+                self.assertEqual(0, self.run_cli("verify").returncode)
+        self.assertEqual(0, self.run_cli("complete", "task-1").returncode)
 
     def test_staging_same_worktree_bytes_invalidates_until_reverification(self):
         source = self.workspace / "src" / "feature.py"

@@ -1,5 +1,7 @@
 # First-time user validation
 
+[中文试用表](adoption-validation.zh-CN.md) · [Documentation](README.md)
+
 Status: **pending real users**. Automated walkthroughs and agent reviews are engineering
 checks; they do not demonstrate adoption, usability for humans, or willingness to reuse.
 
@@ -16,9 +18,13 @@ agent they normally use; a terminal-only attempt is also useful.
 
 ## Record for each participant
 
+Copy the table for each participant. Record actual observations and leave untried
+items as "Not collected."
+
 | Observation | Result |
 | --- | --- |
 | OS, Python version, agent or terminal | Not collected |
+| Exact release tag or development commit; documentation language used | Not collected |
 | Time to first valid completion | Not collected |
 | Steps requiring help or manual JSON repair | Not collected |
 | Can explain command evidence vs browser/manual attestation | Not collected |

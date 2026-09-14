@@ -8,6 +8,7 @@ from typing import Optional
 
 
 RUNTIME_FILES = ("harness.py", "harness_init.py", "harness_runner.py")
+DISTRIBUTION_FILES = (*RUNTIME_FILES, "LICENSE")
 START_MARKER = "<!-- minimal-harness:start -->"
 END_MARKER = "<!-- minimal-harness:end -->"
 
@@ -106,15 +107,15 @@ def initialize(
     if harness.is_symlink() or (harness.exists() and not harness.is_dir()):
         raise ValueError(".harness must be a real directory inside the workspace")
 
-    runtime = {name: _read_regular(source_dir / name) for name in RUNTIME_FILES}
+    distribution = {name: _read_regular(source_dir / name) for name in DISTRIBUTION_FILES}
     writes = {}
     installed = harness.exists() and any(harness.iterdir())
     if installed:
-        required = (*RUNTIME_FILES, "config.json", "tasks.json", "HANDOFF.md")
+        required = (*DISTRIBUTION_FILES, "config.json", "tasks.json", "HANDOFF.md")
         for name in required:
             if not (harness / name).is_file() or (harness / name).is_symlink():
                 raise ValueError(f"partial or conflicting installation: .harness/{name}; no files changed")
-        for name, payload in runtime.items():
+        for name, payload in distribution.items():
             if _read_regular(harness / name) != payload:
                 raise ValueError(f"conflicting installed runtime: {name}; use an explicit upgrade")
         for name in ("config.json", "tasks.json"):
@@ -137,7 +138,7 @@ def initialize(
                 "require_git_for_completion": True,
             },
         }
-        writes = {harness / name: payload for name, payload in runtime.items()}
+        writes = {harness / name: payload for name, payload in distribution.items()}
         writes[harness / "config.json"] = _json_bytes(config)
         writes[harness / "tasks.json"] = _json_bytes(
             {"schema_version": 3, "current_task_id": None, "tasks": []}
