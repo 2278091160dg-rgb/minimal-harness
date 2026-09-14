@@ -8,6 +8,7 @@
 | 下一步想做什么 | 对应指南 |
 | --- | --- |
 | 在 macOS 或 Windows 完成第一次体验 | [从这里开始](../START-HERE.zh-CN.md) |
+| 从 Skill 开发到大型项目，与 Codex Goal、Plan Mode 和 worktree 组合使用 | [Codex 应用攻略](codex-integration-guide.zh-CN.md) |
 | 用 Harness 修复 bug、记录浏览器观察、修订需求或接续会话 | [使用指南](usage-guide.zh-CN.md) |
 | 查询命令、参数、前置状态、文件写入和退出码 | [命令参考](cli-reference.zh-CN.md) |
 | 升级已有安装，同时保留原有状态 | [安装与迁移说明](../README.zh-CN.md) |
