@@ -470,7 +470,8 @@ def run_bounded(
                     break
                 if process.poll() is not None and reader_done.is_set():
                     break
-                limit_reached.wait(0.01)
+                # Condition.wait cleanup can mask KeyboardInterrupt on Windows.
+                time.sleep(0.01)
         except KeyboardInterrupt:
             reason = "interrupted"
             synthetic_returncode = 130

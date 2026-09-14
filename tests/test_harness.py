@@ -1141,7 +1141,7 @@ class HarnessCliTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertNotIn("stale evidence", result.stderr)
 
-    def test_assume_unchanged_file_edit_after_pass_stales_evidence(self):
+    def test_assume_unchanged_file_edit_after_pass_rejects_hidden_index_flags(self):
         self.write_json("config.json", v3_config())
         source = self.workspace / "src" / "feature.py"
         source.parent.mkdir()
@@ -1159,10 +1159,10 @@ class HarnessCliTest(unittest.TestCase):
         result = self.run_cli("complete", "task-1")
 
         self.assertEqual(1, result.returncode)
-        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("hidden index flags", result.stderr)
         self.assertIn("src/feature.py", result.stderr)
 
-    def test_skip_worktree_file_edit_after_pass_stales_evidence(self):
+    def test_skip_worktree_file_edit_after_pass_rejects_hidden_index_flags(self):
         self.write_json("config.json", v3_config())
         source = self.workspace / "src" / "feature.py"
         source.parent.mkdir()
@@ -1180,7 +1180,7 @@ class HarnessCliTest(unittest.TestCase):
         result = self.run_cli("complete", "task-1")
 
         self.assertEqual(1, result.returncode)
-        self.assertIn("stale evidence", result.stderr)
+        self.assertIn("hidden index flags", result.stderr)
         self.assertIn("src/feature.py", result.stderr)
 
     def test_empty_commit_after_pass_stales_evidence(self):
@@ -1853,7 +1853,7 @@ class HarnessCliTest(unittest.TestCase):
         self.assertIn("outside allowed_paths", result.stderr)
         self.assertIn("outside.txt", result.stderr)
 
-    def test_complete_fails_closed_when_git_status_fails(self):
+    def test_complete_fails_closed_when_git_index_is_corrupt(self):
         self.write_json("tasks.json", base_tasks(check_type="manual"))
         self.initialize_git_repository()
         self.assertEqual(0, self.run_cli("next").returncode)
@@ -1869,7 +1869,9 @@ class HarnessCliTest(unittest.TestCase):
         result = self.run_cli("complete", "task-1")
 
         self.assertEqual(1, result.returncode)
-        self.assertIn("git status failed", result.stderr.lower())
+        self.assertRegex(result.stderr.lower(), r"git .* failed")
+        self.assertIn("index", result.stderr.lower())
+        self.assertEqual("in_progress", self.read_tasks()["tasks"][0]["status"])
 
     @unittest.skipIf(os.name == "nt", "executable Git shim is POSIX-specific")
     def test_next_fails_closed_for_branch_and_head_command_errors(self):
