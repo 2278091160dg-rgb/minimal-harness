@@ -1,7 +1,7 @@
 # Hardening and bilingual documentation validation
 
 Engineering validation for the [approved plan](../plans/2026-09-14-hardening-bilingual-docs.md).
-Implementation evaluated at `1bd5bc11da761c3629cf42d087906bc4f49e0578`, based on
+Initial implementation evaluated at `1bd5bc11da761c3629cf42d087906bc4f49e0578`, based on
 `28dc64d1a013983373079301afce922d117dc4bf`.
 
 ## Local results
@@ -50,6 +50,25 @@ new runtime license or this branch's hardening fixes.
 All three component reviews approved the final scoped changes after corrections.
 An independent whole-branch review of `28dc64d..1bd5bc1` also approved the integrated
 implementation with no remaining actionable findings.
+
+## Hosted CI follow-up: relative output directories
+
+The first hosted run passed all unit tests, including native Windows interruption
+coverage. Its standalone release check exposed a Windows Python 3.9 path issue:
+resolving a nonexistent relative output directory could leave it relative, so
+changing the child working directory duplicated that path. The uploaded synthetic
+diagnostic artifact retained the exact failed command and working directory.
+See the [failed release-check job](https://github.com/2278091160dg-rgb/minimal-harness/actions/runs/34797935444/job/103834569490)
+and the matching [CPython pathlib issue](https://github.com/python/cpython/issues/82852).
+
+The follow-up converts the output path to an absolute path with `os.path.abspath`
+before resolving it. Two regressions cover the old resolution behavior and a real
+CLI invocation from outside the repository using a relative output directory. The
+latter still exercises the complete build/install/acceptance/handoff lifecycle.
+The OS/Python matrix, interruption assertions and release checks remain enabled.
+The follow-up passed independent review, Ruff and complete strict ResourceWarning
+suites: **231 tests passed on Python 3.9 and 231 on Python 3.14**. Hosted results
+for the corrected revision are attached to the PR's latest commit.
 
 ## Reproduce
 

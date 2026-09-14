@@ -10,6 +10,7 @@ import time
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +59,9 @@ class ReleaseSmokeTest(unittest.TestCase):
         )
 
     def run_helper(self, output_name="release-check", version="v9.8.7"):
+        return self.run_helper_with_output(self.repo / output_name, self.repo, version)
+
+    def run_helper_with_output(self, output_path, cwd, version="v9.8.7"):
         return subprocess.run(
             [
                 sys.executable,
@@ -67,9 +71,9 @@ class ReleaseSmokeTest(unittest.TestCase):
                 "--version",
                 version,
                 "--output-dir",
-                str(self.repo / output_name),
+                str(output_path),
             ],
-            cwd=self.repo,
+            cwd=cwd,
             capture_output=True,
             text=True,
         )
@@ -160,6 +164,30 @@ class ReleaseSmokeTest(unittest.TestCase):
                     module.safe_extract(archive, destination)
 
                 self.assertEqual([], list(destination.rglob("*")))
+
+    def test_output_path_is_absolute_when_resolve_preserves_a_relative_path(self):
+        module = load_check_module()
+        with mock.patch.object(module.Path, "resolve", lambda path: path):
+            output = module.absolute_output_path(Path("missing-relative-output"))
+
+        self.assertTrue(output.is_absolute(), output)
+
+    def test_relative_output_dir_completes_from_a_non_repository_cwd(self):
+        caller = Path(self.temporary.name) / "non-repository-caller"
+        caller.mkdir()
+
+        result = self.run_helper_with_output("relative-release-check", caller)
+
+        output = caller / "relative-release-check"
+        diagnostic = output / "diagnostics" / "check-release.log"
+        self.assertEqual(
+            0,
+            result.returncode,
+            result.stdout + result.stderr + (diagnostic.read_text() if diagnostic.exists() else ""),
+        )
+        summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
+        self.assertEqual("passed", summary["status"])
+        self.assertEqual("smoke-project", summary["smoke_project"])
 
 
 if __name__ == "__main__":

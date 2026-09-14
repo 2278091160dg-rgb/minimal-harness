@@ -36,6 +36,11 @@ def write_text_lf(path, text):
         handle.write(text)
 
 
+def absolute_output_path(path):
+    """Make a path absolute before resolve for Python 3.9 on Windows."""
+    return Path(os.path.abspath(os.fspath(path))).resolve()
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Build and smoke-check a Minimal Harness release from a fixed Git ref."
@@ -286,7 +291,7 @@ def run_check(repo, ref, version, output_dir, transcript):
 def main(argv=None):
     args = parse_args(argv)
     repo = Path(__file__).resolve().parents[1]
-    output_dir = args.output_dir.resolve()
+    output_dir = absolute_output_path(args.output_dir)
     transcript = Transcript(output_dir / "diagnostics" / "check-release.log")
     try:
         run_check(repo, args.ref, args.version, output_dir, transcript)
