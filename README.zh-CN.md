@@ -10,9 +10,15 @@
 ## 下载与版本
 
 [GitHub Releases](https://github.com/2278091160dg-rgb/minimal-harness/releases) 提供
-运行时 ZIP 和 `SHA256SUMS.txt`。本文介绍 schema v3 开发版本；已发布的 v0.1.1 尚无
-`init`、`task add/revise` 和 `report`，体验 v3 请使用下方源码流程。已有项目应按本文
-迁移步骤升级，保留自己的配置、任务与历史证据。
+运行时 ZIP 和 `SHA256SUMS.txt`。本文介绍 schema v3 测试版
+[v0.2.0-beta.1](https://github.com/2278091160dg-rgb/minimal-harness/releases/tag/v0.2.0-beta.1)。
+正式版 v0.1.1 尚无 `init`、`task add/revise` 和 `report`。
+
+首次安装时，按 `SHA256SUMS.txt` 核对 ZIP 的摘要，将其解压到独立目录，再用 Python 3.9+
+运行该目录下的 `.harness/harness.py --workspace /path/to/project init --agent codex`，
+创建空任务并接入 Agent 指令。运行时 ZIP 不含示例，完整体验请使用下方源码流程。
+已有项目应按本文迁移步骤升级，保留自己的配置、任务、Agent 指令与历史证据。
+不要将 ZIP 直接解压覆盖已有项目的 `.harness/` 目录。
 
 ## 完整体验一次
 
@@ -171,13 +177,14 @@ report、complete、handoff 全流程，最后停止服务器并打印证据目�
 `harness_runner.py` 三个代码文件，保留自己的配置、任务和证据。随后预览并显式迁移：
 
 ```bash
-python3 .harness/harness.py migrate --dry-run
+python3 .harness/harness.py migrate --dry-run --note "确认以当前验收定义进入 v3"
 python3 .harness/harness.py migrate --note "确认以当前验收定义进入 v3"
 ```
 
 迁移归档旧状态并保留历史证据。旧证据不能追溯获得代码与验收绑定，未完成任务需要
 重验。v2 的原 Git/策略起点、阻塞状态和失败计数保留；旧完成任务明确标为历史记录。
-v1 活跃任务若缺少可用起点，需要说明后重新建立起点。重复迁移安全，不会静默升级。
+v1 活动或阻塞任务需要说明后重新建立 Git 起点，旧起点保留为历史。
+重复迁移安全，不会静默升级。
 
 ## 能力边界与开发检查
 

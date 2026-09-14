@@ -15,10 +15,17 @@ both the current source and the agreed acceptance definition.
 ## Downloads and versions
 
 [Release downloads](https://github.com/2278091160dg-rgb/minimal-harness/releases) include
-runtime ZIPs and `SHA256SUMS.txt`. This README describes the schema v3 development version;
-the published v0.1.1 workflow predates `init`, `task add/revise` and `report`. Use the source
-checkout below to try v3. Upgrade an existing workspace through the explicit migration
-steps below, preserving its configuration, tasks and historical evidence.
+runtime ZIPs and `SHA256SUMS.txt`. This README describes the schema v3 beta,
+[v0.2.0-beta.1](https://github.com/2278091160dg-rgb/minimal-harness/releases/tag/v0.2.0-beta.1).
+The stable v0.1.1 workflow predates `init`, `task add/revise` and `report`.
+
+For a new installation, verify the ZIP against `SHA256SUMS.txt` and extract it into a
+separate directory. Run its `.harness/harness.py --workspace /path/to/project init
+--agent codex` with Python 3.9+ to create empty task state and connect your agent.
+The runtime ZIP does not include examples; use the source walkthrough below for those.
+For an existing installation, follow the explicit migration steps below, preserving
+your configuration, tasks, agent instructions and historical evidence. Do not extract
+the ZIP over an existing project's `.harness/` directory.
 
 ## Try a complete task
 
@@ -190,15 +197,16 @@ Back up your installation, then replace only `harness.py`, `harness_init.py`, an
 Preview and explicitly migrate:
 
 ```bash
-python3 .harness/harness.py migrate --dry-run
+python3 .harness/harness.py migrate --dry-run --note "Acknowledge the current acceptance definition for v3"
 python3 .harness/harness.py migrate --note "Acknowledge the current acceptance definition for v3"
 ```
 
 Migration archives the old state and preserves historical evidence. Old passing evidence
 cannot acquire source/contract bindings retroactively: unfinished tasks must reverify.
 Existing v2 Git/policy baselines and blocking counters survive; completed legacy tasks
-are labeled historical, not v3 verified. A v1 task lacking a usable baseline requires an
-explicit note before rebaselining. Repeated migration is safe; there is no silent upgrade.
+are labeled historical, not v3 verified. Active or blocked v1 tasks require an explicit
+note and receive a new Git baseline; their old baselines are retained as history.
+Repeated migration is safe; there is no silent upgrade.
 
 ## Trust and scope
 
